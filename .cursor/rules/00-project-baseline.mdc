@@ -7,19 +7,25 @@ alwaysApply: true
 
 项目名称是 MTX Data Platform，简称 MTX RDP。仓库名是 `mtx-data-platform`。Maven `groupId` 与 Java 基础包名都是 `com.mtx.rdp`。根工程 `artifactId` 是 `mtx-data-platform`，`packaging` 是 `pom`。默认分支是 `main`。仓库保持 Private。
 
-技术基线以 `docs/decisions/0001-technology-baseline.md` 为准：
+版本决策沿用 `docs/decisions/0001-technology-baseline.md`。V2 模块结构和“是否已经进入类路径”以 `docs/decisions/0002-v2-module-architecture.md` 与根 POM 为准。ADR-0001 是历史决策，不再决定当前模块名单。
 
-- JDK 25 LTS。不要把 JDK 27 写成当前编译或运行基线。
-- Spring Boot 3.5.16。不要为了追新改到尚未在决策中接受的 Spring Boot 4。
+当前技术状态：
+
+- JDK 25 LTS。已验证的开发运行时是 Temurin 25.0.5.1+2。不要把 JDK 27 写成当前编译或运行基线。
+- Spring Boot 3.5.16。工程导入其 BOM，不继承 `spring-boot-starter-parent`。不要为了追新改到尚未在决策中接受的 Spring Boot 4。
+- Spring Framework 6.2.19 由 Spring Boot 3.5.16 BOM 解析。不要在子模块单独覆盖。
 - Maven 编译 `release` 为 25。
-- ORM 使用 MyBatis-Plus 3.5.18.1 的 `mybatis-plus-spring-boot3-starter`。不要并行再声明 MyBatis 或 MyBatis-Spring 版本。
-- OLAP 存储是 Apache Doris。消息队列是 Apache Kafka。不要替换成其他 OLAP 或 RocketMQ。
-- 初期任务调度是 Quartz 2.5.2。不要引入 XXL-JOB。
-- 工作流演进方向是 Apache DolphinScheduler。当前初始化工程不加入其客户端依赖。
-- 测试使用 JUnit Jupiter 5.12.2。不要换成 TestNG，也不要在未更新决策时升到 JUnit 6。
-- 数据处理是自研 Transform / Pipeline。
+- 消息队列基线是 Apache Kafka。Kafka Client 3.9.2 与 Spring Kafka 3.3.16 由 Spring Boot BOM 管理，当前骨架没有把它们写入模块依赖。不要改回 RocketMQ，也不要在模块 POM 里另写一套版本。
+- 初期调度方向是 Quartz 2.5.2，版本由 Spring Boot BOM 管理。当前没有进入运行时依赖，调度实现尚未完成。不要引入 XXL-JOB，也不要新增 `platform-scheduler` 模块。
+- 自研 Pipeline 与具体调度框架解耦。Pipeline 不依赖 Quartz 或 DolphinScheduler。
+- Apache DolphinScheduler 只作为未来复杂 DAG 与工作流场景的演进方向。当前不引入其依赖，也不要写成已经使用。
+- OLAP 方向是 Apache Doris。Writer 的具体实现和客户端依赖尚未完成。不要替换成其他 OLAP。
+- MyBatis-Plus 3.5.18.1 的 `mybatis-plus-spring-boot3-starter` 只保留选型，并登记在根 POM 的 `dependencyManagement`。它尚未进入运行时依赖。不要并行再声明 MyBatis 或 MyBatis-Spring 版本，也不要把它写成已经接入。
+- MySQL、Redis、Flyway 均未决策。不要写成已选定，也不要引入对应依赖。
+- 测试使用 JUnit Jupiter 5.12.2，由 Spring Boot BOM 管理。不要换成 TestNG，也不要在未更新决策时升到 JUnit 6。
+- 数据处理是自研 Transform / Pipeline。当前能力模块仍是骨架，不代表转换或流程已经实现。
 
-没有新的决策记录时，不要替换上述方案，也不要只为了使用最新版本加入未经验证的依赖。
+没有新的决策记录时，不要替换上述方案，也不要只为了使用最新版本加入未经验证的依赖。BOM 或 `dependencyManagement` 中出现某个坐标，不等于该依赖已经进入编译或运行类路径。
 
 正式详细设计尚未入库。不要编造已经评审通过的表结构、接口契约或 Pipeline 节点设计。这类内容先放在对应文档目录并标明状态，确认前不要写成已定稿实现。
 

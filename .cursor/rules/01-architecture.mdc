@@ -5,21 +5,35 @@ alwaysApply: true
 
 # 架构约束
 
-模块规划和依赖方向以 `docs/architecture/module-plan.md` 为准。调度职责以 `docs/architecture/scheduling.md` 为准。
+V2 模块名单和依赖方向以 `docs/decisions/0002-v2-module-architecture.md` 为准。调度职责以 `docs/architecture/scheduling.md` 为准。`docs/architecture/module-plan.md` 是初始化阶段的历史规划，不再作为 V2 模块名单。
 
-目标模块是 `rdp-common`、`rdp-api`、`rdp-core`、`rdp-connector`、`rdp-transform`、`rdp-quality`、`rdp-writer`、`rdp-task`、`rdp-scheduler`、`rdp-worker`、`rdp-pipeline`、`rdp-messaging`、`rdp-integration`、`rdp-server`。没有明确调用方时不要创建空模块。
+V2 反应器只有：
 
-已落地的只有：
+- `platform-common`
+- `platform-core`
+- `platform-messaging`
+- `platform-connector`
+- `platform-transform`
+- `platform-quality`
+- `platform-writer`
+- `platform-pipeline`
+- `app-admin`
+- `app-worker`
 
-- `rdp-common`：共享类型。不依赖 Spring、Quartz、Kafka、Doris 或 Pipeline。
-- `rdp-server`：进程入口。不承载 Pipeline 业务逻辑，不直接调用 Quartz API。
+不得增加第 11 个模块。`rdp-common` 与 `rdp-server` 已从当前工程删除，不要恢复进聚合，也不要改名后当作 V2 模块。旧代码只通过 Git 历史追溯。
+
+依赖约束：
+
+- `platform-common` 不依赖 Spring 或其他内部模块。
+- `platform-core` 只依赖 `platform-common`，不依赖 Spring、Kafka、JDBC、MyBatis、Quartz、Redis。
+- `platform-pipeline` 只依赖 `platform-common` 和 `platform-core`。它不依赖 Connector、Transform、Quality、Writer 的实现，也不依赖 Quartz 或 DolphinScheduler。
+- `app-admin` 与 `app-worker` 互不依赖，分别打包和部署。
+- Worker 负责执行能力装配。Core 只定义边界。
 
 调度边界：
 
-- Quartz 只做 Cron、触发、Job 入口、触发状态和基础调度。它不实现数据处理 Pipeline。
-- 自研 Pipeline 负责流程定义、节点组织、执行上下文、转换、质量检查、写入，以及执行状态和结果。Pipeline 核心不依赖 Quartz 或 DolphinScheduler。
-- DolphinScheduler 以后负责 DAG、任务依赖、工作流实例、分布式调度、运行状态、失败重试和运行治理。
+- Quartz 只做 Cron、触发、Job 入口、触发状态和基础调度。它不实现数据处理 Pipeline，也不单独成为模块。
+- 自研 Pipeline 负责流程定义、节点组织、执行上下文、转换、质量检查、写入，以及执行状态和结果。
+- DolphinScheduler 以后负责 DAG、任务依赖、工作流实例、分布式调度、运行状态、失败重试和运行治理。当前不引入其依赖。
 - 调度框架必须通过适配层隔离。Quartz API 不得进入 Pipeline、Connector、Transform、Writer。
 - 同一个任务不得由 Quartz 和 DolphinScheduler 重复调度。
-
-`rdp-server` 可以在后续组装应用，但不得把调度实现和数据转换写进启动类。

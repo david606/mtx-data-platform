@@ -1,8 +1,16 @@
 # 模块规划
 
-本文描述 MTX Data Platform 的目标模块、依赖方向，以及初始化阶段实际创建的 Maven 模块。它不是详细设计，不定义 Pipeline 节点、表或接口字段。
+> 状态：历史规划。本文自下一节起保留初始化阶段的原文，不作为当前实施依据。
+>
+> 当前 V2 模块结构以 [ADR-0002](../decisions/0002-v2-module-architecture.md) 为准。当前唯一有效的 Maven 结构是十模块：`platform-common`、`platform-core`、`platform-messaging`、`platform-connector`、`platform-transform`、`platform-quality`、`platform-writer`、`platform-pipeline`、`app-admin`、`app-worker`。
+>
+> `rdp-common` 与 `rdp-server` 是旧工程模块。依赖与代码价值审查后，它们已从当前工程删除，不属于 V2 十模块。下文表格仍是当时的历史规划，不是要求把这些目录加回来。
+>
+> 下文中的 `rdp-*` 名单、依赖方向和落地顺序都是当时的规划。其中 `rdp-pipeline` 依赖具体能力模块、以及单独的 `rdp-scheduler`、`rdp-task`、`rdp-api`、`rdp-integration`，与 ADR-0002 冲突。后续实施不得用这些旧结构覆盖 ADR-0002，也不得据此增加第十一模块。
 
 ## 初始化阶段实际创建
+
+以下为历史原文。它记录的是十模块骨架落地前实际创建过的模块，不是当前反应器。
 
 只创建了能够验证 JDK 25 与 Spring Boot 基线的模块：
 
@@ -14,6 +22,8 @@
 其余目标模块没有创建。当前没有调用方，创建空模块会固定一套尚未评审的包结构。
 
 ## 目标模块
+
+以下表格是历史目标，不是 V2 当前模块。
 
 | 模块 | 职责 | 允许依赖 | 禁止 |
 | --- | --- | --- | --- |
@@ -36,6 +46,8 @@
 
 ## 建议的落地顺序
 
+以下顺序是历史建议，不要按此创建 `rdp-*` 模块。
+
 1. 保持 `rdp-common` 与 `rdp-server` 可构建。
 2. 评审任务触发端口后再创建 `rdp-core` 与 `rdp-task`。
 3. 创建 `rdp-pipeline` 及其上下游（connector、transform、quality、writer）时，先落端口和测试，再接入真实 Doris 或业务源。
@@ -44,6 +56,8 @@
 6. `rdp-worker` 在执行模型明确后创建。`rdp-api` 在第一条对外契约明确后创建。
 
 ## 尚未决定
+
+以下事项在这份历史规划写下时尚未决定。其中模块形态已被 ADR-0002 取代；数据产品、表结构和调度集成细节仍待后续详细设计，本文不补写结论。
 
 - 元数据库产品选型与表结构。
 - Doris 库、表模型和官方 JDBC 驱动版本。

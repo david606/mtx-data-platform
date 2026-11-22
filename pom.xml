@@ -13,8 +13,16 @@
     <description>A unified data platform for restaurant chain enterprises.</description>
 
     <modules>
-        <module>rdp-common</module>
-        <module>rdp-server</module>
+        <module>platform-common</module>
+        <module>platform-core</module>
+        <module>platform-messaging</module>
+        <module>platform-connector</module>
+        <module>platform-transform</module>
+        <module>platform-quality</module>
+        <module>platform-writer</module>
+        <module>platform-pipeline</module>
+        <module>app-admin</module>
+        <module>app-worker</module>
     </modules>
 
     <properties>
@@ -23,14 +31,9 @@
         <java.version>25</java.version>
         <maven.compiler.release>25</maven.compiler.release>
 
-        <!-- Locked after compatibility checks. See docs/decisions/0001-technology-baseline.md -->
         <spring-boot.version>3.5.16</spring-boot.version>
+        <!-- Coordinate reserved only. No module depends on the starter in this skeleton. -->
         <mybatis-plus.version>3.5.18.1</mybatis-plus.version>
-        <!-- Versions below match the Spring Boot 3.5.16 BOM. Kept visible so modules do not drift. -->
-        <quartz.version>2.5.2</quartz.version>
-        <kafka.version>3.9.2</kafka.version>
-        <spring-kafka.version>3.3.16</spring-kafka.version>
-        <junit-jupiter.version>5.12.2</junit-jupiter.version>
 
         <maven-compiler-plugin.version>3.15.0</maven-compiler-plugin.version>
         <maven-surefire-plugin.version>3.5.4</maven-surefire-plugin.version>
@@ -48,28 +51,58 @@
             </dependency>
             <dependency>
                 <groupId>com.mtx.rdp</groupId>
-                <artifactId>rdp-common</artifactId>
+                <artifactId>platform-common</artifactId>
                 <version>${project.version}</version>
             </dependency>
-            <!--
-              Managed for later modules. Not used by the initialization reactor.
-              Spring Boot 3 line uses mybatis-plus-spring-boot3-starter.
-              Do not also declare mybatis or mybatis-spring; the starter selects them.
-            -->
+            <dependency>
+                <groupId>com.mtx.rdp</groupId>
+                <artifactId>platform-core</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.mtx.rdp</groupId>
+                <artifactId>platform-messaging</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.mtx.rdp</groupId>
+                <artifactId>platform-connector</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.mtx.rdp</groupId>
+                <artifactId>platform-transform</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.mtx.rdp</groupId>
+                <artifactId>platform-quality</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.mtx.rdp</groupId>
+                <artifactId>platform-writer</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.mtx.rdp</groupId>
+                <artifactId>platform-pipeline</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.mtx.rdp</groupId>
+                <artifactId>app-admin</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.mtx.rdp</groupId>
+                <artifactId>app-worker</artifactId>
+                <version>${project.version}</version>
+            </dependency>
             <dependency>
                 <groupId>com.baomidou</groupId>
                 <artifactId>mybatis-plus-spring-boot3-starter</artifactId>
                 <version>${mybatis-plus.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>org.springframework.boot</groupId>
-                <artifactId>spring-boot-starter-quartz</artifactId>
-                <version>${spring-boot.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>org.springframework.kafka</groupId>
-                <artifactId>spring-kafka</artifactId>
-                <version>${spring-kafka.version}</version>
             </dependency>
         </dependencies>
     </dependencyManagement>
@@ -84,6 +117,7 @@
                     <configuration>
                         <release>${maven.compiler.release}</release>
                         <parameters>true</parameters>
+                        <encoding>UTF-8</encoding>
                     </configuration>
                 </plugin>
                 <plugin>
@@ -125,7 +159,6 @@
                             <rules>
                                 <requireJavaVersion>
                                     <version>[25,26)</version>
-                                    <message>MTX RDP builds with JDK 25 LTS. JDK 27 is not the project baseline.</message>
                                 </requireJavaVersion>
                             </rules>
                         </configuration>

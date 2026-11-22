@@ -2,7 +2,7 @@
 
 MTX Data Platform（MTX RDP）是面向连锁餐饮企业的统一数据平台。
 
-本仓库当前是工程初始化结果：Maven 多模块骨架、技术基线锁定、架构约束和持续集成。数据处理 Pipeline、连接器、调度实现和业务表结构尚未开始。
+本仓库当前是 V2 十模块 Maven 工程骨架、技术基线锁定、架构约束和持续集成。数据处理 Pipeline、连接器、调度实现和业务表结构尚未开始。
 
 ## 命名
 
@@ -18,28 +18,35 @@ MTX Data Platform（MTX RDP）是面向连锁餐饮企业的统一数据平台�
 
 ## 技术基线
 
-已锁定版本和选择依据见 [docs/decisions/0001-technology-baseline.md](docs/decisions/0001-technology-baseline.md)。
+版本依据见 [docs/decisions/0001-technology-baseline.md](docs/decisions/0001-technology-baseline.md)。V2 模块结构见 [docs/decisions/0002-v2-module-architecture.md](docs/decisions/0002-v2-module-architecture.md)。
 
-| 领域 | 方案 | 当前锁定 |
+| 领域 | 方案 | 当前状态 |
 | --- | --- | --- |
 | Java | JDK 25 LTS | Temurin 25.0.5.1（2026-11-17） |
 | 应用框架 | Spring Boot | 3.5.16 |
-| 构建 | Maven | 3.6.3 及以上；本机验证使用 3.9.6 |
-| ORM | MyBatis-Plus | 3.5.18.1（`mybatis-plus-spring-boot3-starter`） |
-| OLAP | Apache Doris | 基线已确定，客户端版本在连接器模块设计时锁定 |
-| 消息队列 | Apache Kafka | 客户端 3.9.2，Spring for Apache Kafka 3.3.16（由 Spring Boot BOM 管理） |
-| 初期调度 | Quartz | 2.5.2 |
+| 构建 | Maven Wrapper | 3.9.6 |
+| ORM | MyBatis-Plus | 3.5.18.1 保留选型，尚未进入运行时依赖 |
+| OLAP | Apache Doris | 方向已确认。Writer 实现和客户端尚未完成 |
+| 消息队列 | Apache Kafka | 客户端 3.9.2，Spring Kafka 3.3.16。均由 Spring Boot BOM 管理，骨架尚未引入 |
+| 初期调度 | Quartz | 2.5.2，由 Spring Boot BOM 管理。尚未进入运行时，调度实现未完成 |
 | 数据处理 | 自研 Transform / Pipeline | 尚未实现 |
-| 工作流演进 | Apache DolphinScheduler | 后续接入，当前不引入依赖 |
+| 工作流演进 | Apache DolphinScheduler | 未来演进方向，当前不引入依赖 |
+| 未决策 | MySQL、Redis、Flyway | 均未选定，当前不引入 |
 | 测试 | JUnit 5 | JUnit Jupiter 5.12.2 |
 | 容器 | Docker | 镜像构建尚未添加 |
 
-## 已创建模块
+## 模块
 
-只创建了启动验证所必需的模块。其余模块的边界见 [docs/architecture/module-plan.md](docs/architecture/module-plan.md)，尚未建空目录。
+根 POM 只聚合这十个 V2 模块：
 
-- `rdp-common`：平台标识等共享类型，不依赖 Spring、Quartz 或 Pipeline。
-- `rdp-server`：进程入口。只验证 Spring Boot 能在 JDK 25 上启动，不包含调度或数据处理实现。
+- `platform-common`、`platform-core`
+- `platform-messaging`、`platform-connector`、`platform-transform`、`platform-quality`、`platform-writer`
+- `platform-pipeline`
+- `app-admin`、`app-worker`
+
+`app-admin` 是管理端，启动类为 `com.mtx.rdp.admin.AdminApplication`。`app-worker` 是执行端，启动类为 `com.mtx.rdp.worker.WorkerApplication`。两者互不依赖。
+
+`rdp-common` 与 `rdp-server` 已从当前工程删除，不参与聚合。旧代码留在 Git 历史中，不迁移进十个模块。当前骨架没有业务 Controller、任务处理、Kafka 监听、数据库配置或 Pipeline 实现。
 
 ## 本地构建
 
@@ -48,11 +55,13 @@ MTX Data Platform（MTX RDP）是面向连锁餐饮企业的统一数据平台�
 ```bash
 export JAVA_HOME="$HOME/.sdkman/candidates/java/25.0.5.1+2-tem"
 export PATH="$JAVA_HOME/bin:$PATH"
-java -version
-mvn clean verify
+./mvnw -version
+./mvnw -B validate
+./mvnw -B verify
+./mvnw -B clean verify
 ```
 
-`scripts/verify.sh` 会在 `JAVA_HOME` 未指向 25 时，尝试使用本机已安装的 Temurin 25，然后执行 `mvn clean verify`。
+标准构建使用 Maven Wrapper 3.9.6，不要改用未固定版本的 `mvn`。`scripts/verify.sh` 会选择 JDK 25，然后执行 `./mvnw --batch-mode clean verify`。
 
 ## 文档
 

@@ -37,4 +37,4 @@ fi
 echo "Using ${JAVA_HOME}"
 java -version
 cd "${ROOT}"
-mvn --batch-mode clean verify
+./mvnw --batch-mode clean verify

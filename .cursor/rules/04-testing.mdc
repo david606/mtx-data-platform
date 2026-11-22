@@ -6,10 +6,16 @@ alwaysApply: false
 
 # 测试
 
-- 测试框架是 JUnit 5（JUnit Jupiter 5.12.2），由 Spring Boot 3.5.16 BOM 管理。不要另引入一套测试框架。
-- 单元测试不启动外部 Kafka、Doris 或数据库。需要这些依赖的测试以后单独标记，并在文档中说明如何启用。
-- `rdp-common` 保持纯单元测试，不加载 Spring 上下文。
-- Spring 上下文测试只放在真正需要容器的模块。初始化阶段的 `rdp-server` 只验证上下文能够在 JDK 25 上启动。
+测试位置和依赖边界以 `docs/decisions/0002-v2-module-architecture.md` 为准。`rdp-common` 与 `rdp-server` 已从当前工程删除，不再作为测试位置。当前应用上下文测试只放在 `app-admin` 与 `app-worker`。
+
+- 测试框架是 JUnit Jupiter 5.12.2，由 Spring Boot 3.5.16 BOM 管理。不要另引入 JUnit BOM，不要换成 TestNG，未更新决策前不要升到 JUnit 6。
+- 单元测试放在被测能力模块内：`platform-common`、`platform-core`、`platform-messaging`、`platform-connector`、`platform-transform`、`platform-quality`、`platform-writer`、`platform-pipeline`。
+- 应用上下文测试放在 `app-admin` 与 `app-worker`。当前这两处测试只验证各自的 Spring 上下文能够在 JDK 25 上启动。
+- 空能力模块处于骨架阶段。没有可测行为时，不要求为了凑测试而增加无意义的测试类。
+- 单元测试不启动外部 Kafka、Doris 或数据库。当前没有真实集成测试。需要外部依赖的测试以后按实际集成边界单独标记，并在文档中说明如何启用。不要虚构当前不存在的集成场景。
+- Maven Failsafe 当前没有启用。将来确实需要集成测试时，再在对应应用模块中显式配置，不在能力模块里提前打开。
+- `platform-common` 与 `platform-core` 的测试不加载 Spring 上下文，也不依赖 Kafka、JDBC、MyBatis、Quartz、Redis。
+- `platform-pipeline` 的测试只依赖 `platform-common` 与 `platform-core`。测试代码不 import Connector、Transform、Quality、Writer 的实现，也不 import Quartz 或 DolphinScheduler。
+- `app-admin` 的测试不依赖 `app-worker`。`app-worker` 的测试不依赖 `app-admin`。
 - 测试不依赖执行顺序，不读取本机私有路径，不包含真实凭据。
-- 修改调度适配、Pipeline 端口或写入逻辑时，为边界补测试：核心模块的测试代码也不能 import Quartz 或 DolphinScheduler。
-- 提交前在 JDK 25 上执行 `mvn clean verify`。只在 JDK 17 或 JDK 27 上通过不算满足基线。
+- 提交前在 JDK 25 上执行 `./mvnw -B clean verify`。只在 JDK 17 或 JDK 27 上通过不算满足基线。

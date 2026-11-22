@@ -1,24 +1,71 @@
 # 本地开发
 
+当前构建对象是 V2 十模块反应器。模块边界以 [ADR-0002](../decisions/0002-v2-module-architecture.md) 为准。
+
 ## JDK
 
 项目编译和测试使用 JDK 25 LTS。不要使用 JDK 27 作为本项目的当前基线。
 
-已在开发机通过 SDKMAN 安装 Temurin `25.0.5.1+2`（版本字符串 `25.0.5.1`，2026-11-17 LTS）。该安装没有改写 SDKMAN 的默认 Java。默认 Java 仍可能是 17。构建前执行：
-
-```bash
-export JAVA_HOME="$HOME/.sdkman/candidates/java/25.0.5.1+2-tem"
-export PATH="$JAVA_HOME/bin:$PATH"
-java -version
-mvn clean verify
-```
-
-`java -version` 应显示 25。父 POM 的 Enforcer 拒绝 25 以外的主版本。
+验收时 `./mvnw -version` 使用的是 Temurin `25.0.5.1+2`（版本字符串 `25.0.5.1`）。父 POM 的 Enforcer 要求 `[25,26)`。本机默认 `java` 若不是 25，先把 `JAVA_HOME` 指到 JDK 25，或执行 `scripts/verify.sh`，该脚本会选择 JDK 25。
 
 ## Maven
 
-使用 Maven 3.6.3 或更高版本。依赖版本由根 POM 管理，子模块不要重复声明 Spring Boot、MyBatis-Plus、Quartz、Kafka 和 JUnit 的版本号。
+使用仓库内的 Maven Wrapper。Wrapper 固定 Apache Maven 3.9.6，分发方式是 `only-script`，不依赖未提交的 `maven-wrapper.jar`。
 
-## 当前不会启动的组件
+```bash
+./mvnw -version
+```
 
-本地 `mvn clean verify` 不连接 Doris、Kafka 或数据库。`rdp-server` 的测试只启动没有数据源和消息监听器的 Spring 上下文。
+根 POM `packaging` 为 `pom`，只聚合这十个模块：
+
+- `platform-common`
+- `platform-core`
+- `platform-messaging`
+- `platform-connector`
+- `platform-transform`
+- `platform-quality`
+- `platform-writer`
+- `platform-pipeline`
+- `app-admin`
+- `app-worker`
+
+`docs/`、`sql/`、`deploy/`、`scripts/` 是工程目录，不是 Maven 模块。
+
+`rdp-common` 与 `rdp-server` 已从当前工程删除。不要把它们加回反应器，也不要改名后当作 V2 模块。
+
+当前可执行应用是 `app-admin` 与 `app-worker`。八个 `platform-*` 能力模块在骨架阶段允许没有 Java 源文件；`verify` 时出现空 JAR 是当前预期，不表示业务能力已经实现。
+
+依赖版本由根 POM 和 Spring Boot 3.5.16 BOM 管理。子模块不要重复声明 Spring Boot、Spring Framework、MyBatis-Plus、Quartz、Kafka 和 JUnit 的版本号。`dependencyManagement` 中的坐标不等于已经进入类路径。
+
+内部依赖只允许：
+
+| 模块 | 允许的内部模块 |
+| --- | --- |
+| `platform-common` | 无 |
+| `platform-core` | `platform-common` |
+| `platform-messaging` | `platform-common`、`platform-core` |
+| `platform-connector` | `platform-common`、`platform-core` |
+| `platform-transform` | `platform-common`、`platform-core` |
+| `platform-quality` | `platform-common`、`platform-core` |
+| `platform-writer` | `platform-common`、`platform-core` |
+| `platform-pipeline` | `platform-common`、`platform-core` |
+| `app-admin` | `platform-common`、`platform-core`、`platform-messaging` |
+| `app-worker` | `platform-common`、`platform-core`、`platform-messaging`、`platform-connector`、`platform-transform`、`platform-quality`、`platform-writer`、`platform-pipeline` |
+
+`platform-pipeline` 不依赖 Connector、Transform、Quality、Writer 的实现，也不依赖 Quartz 或 DolphinScheduler。`app-admin` 与 `app-worker` 互不依赖。
+
+## 构建与测试
+
+```bash
+./mvnw -version
+./mvnw -B validate
+./mvnw -B dependency:tree -Dincludes=com.mtx.rdp
+./mvnw -B verify
+./mvnw -B clean verify
+```
+
+`./mvnw -B verify` 编译、执行现有测试并打包，不删除已有 `target`。`./mvnw -B clean verify` 会先删除构建产物，提交前和 CI 使用这条。CI 命令是 `./mvnw -B clean verify`。
+
+当前测试只有 `app-admin` 与 `app-worker` 的 Spring 上下文启动测试。八个能力模块没有测试类。Maven Failsafe 没有启用。这些命令不连接 Doris、Kafka 或数据库，也没有业务启动参数。
+
+当前配置只有两个应用名：`app-admin/src/main/resources/application.yml` 中的 `mtx-rdp-admin`，以及 `app-worker/src/main/resources/application.yml` 中的 `mtx-rdp-worker`。没有数据库、Kafka 或业务接口配置。

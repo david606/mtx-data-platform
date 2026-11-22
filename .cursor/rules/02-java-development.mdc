@@ -6,11 +6,23 @@ alwaysApply: false
 
 # Java 开发
 
-- 包名以 `com.mtx.rdp` 开头，并与模块职责一致。例如服务器入口使用 `com.mtx.rdp.server`。
+模块边界以 `docs/decisions/0002-v2-module-architecture.md` 为准。当前应用只有两个，包名和主类不同：
+
+- `app-admin` 是管理端。启动类是 `com.mtx.rdp.admin.AdminApplication`。
+- `app-worker` 是执行端。启动类是 `com.mtx.rdp.worker.WorkerApplication`。
+
+两者不能互相依赖。当前应用入口只有这两个启动类。已删除的 `com.mtx.rdp.server.RdpServerApplication` 不是 V2 入口，也不要恢复。
+
+- 包名以 `com.mtx.rdp` 开头，并与模块职责一致。
 - 源码和资源文件使用 UTF-8。Java 编译目标是 `--release 25`。
-- 使用构造器或明确的工厂表达依赖。不要在 Pipeline、Connector、Transform、Writer 中引用 `org.quartz` 或 DolphinScheduler 的类型。
-- 调度适配只放在未来的 `rdp-scheduler` 或 `rdp-integration`。适配层向外暴露平台自己的触发端口，不把框架 Job 类型传到核心模块。
-- MyBatis-Plus 只通过父 POM 管理的 `mybatis-plus-spring-boot3-starter` 引入。不要同时加入 `mybatis-spring-boot-starter`。分页等 SQL 解析插件在真正使用前再选择 `mybatis-plus-jsqlparser` 模块，版本与 MyBatis-Plus 保持一致。
+- 使用构造器或明确的工厂表达依赖。
+- 内部依赖只允许 ADR-0002 的矩阵：`platform-common` 无内部依赖；`platform-core` 只依赖 `platform-common`；`platform-messaging`、`platform-connector`、`platform-transform`、`platform-quality`、`platform-writer`、`platform-pipeline` 只依赖 `platform-common` 与 `platform-core`；`app-admin` 再加 `platform-messaging`；`app-worker` 再加 messaging、connector、transform、quality、writer、pipeline。不要增加第十一模块。
+- `platform-core` 保持框架无关，不依赖 Spring、Kafka、JDBC、MyBatis、Quartz、Redis 或 Doris 客户端。
+- `platform-pipeline` 不依赖 Connector、Transform、Quality、Writer 的实现模块。不要在 Pipeline、Connector、Transform、Writer 中引用 `org.quartz` 或 DolphinScheduler 的类型。
+- 调度适配的模块归属尚未确定，以后续详细设计为准。不要把 `rdp-scheduler`、`rdp-integration` 或 `platform-scheduler` 写成当前或未来必建模块。适配只能通过 Core 中的抽象协作，不把框架 Job 类型传入 Core。
+- 连接器、转换、质量检查、写入、Pipeline 和调度都尚未实现。不要在代码或注释里写成已经完成。
+- MyBatis-Plus 3.5.18.1 的 `mybatis-plus-spring-boot3-starter` 只在父 POM 的 `dependencyManagement` 中保留选型，当前不要加入模块 `dependencies`。真正引入时只用这个坐标，不要同时加入 `mybatis-spring-boot-starter`。分页等 SQL 解析插件在真正使用前再选择 `mybatis-plus-jsqlparser`，版本与 MyBatis-Plus 保持一致。
+- MySQL、Redis、Flyway 尚未决策。不要引入对应驱动、客户端或迁移依赖。
 - 日志使用 Spring Boot 默认的 SLF4J。不要打印密钥、令牌、密码和完整证件号。
 - 不要提交仅用于本地实验的 `application-local` 配置。示例配置使用占位符，不写真实主机、账号和口令。
-- 新增依赖前先确认它与 Spring Boot 3.5.16、JDK 25 和已锁定组件兼容，并写入决策或模块说明。父 POM 未管理的第三方库不要在子模块里随意指定版本。
+- 新增依赖前先确认它与 Spring Boot 3.5.16、JDK 25 和已锁定组件兼容，并写入决策或模块说明。父 POM 未管理的第三方库不要在子模块里随意指定版本。`dependencyManagement` 中有坐标，不等于可以把它加入类路径。
