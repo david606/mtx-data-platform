@@ -1,0 +1,15 @@
+---
+description: MTX RDP 测试约束
+globs: "**/src/test/**/*.java"
+alwaysApply: false
+---
+
+# 测试
+
+- 测试框架是 JUnit 5（JUnit Jupiter 5.12.2），由 Spring Boot 3.5.16 BOM 管理。不要另引入一套测试框架。
+- 单元测试不启动外部 Kafka、Doris 或数据库。需要这些依赖的测试以后单独标记，并在文档中说明如何启用。
+- `rdp-common` 保持纯单元测试，不加载 Spring 上下文。
+- Spring 上下文测试只放在真正需要容器的模块。初始化阶段的 `rdp-server` 只验证上下文能够在 JDK 25 上启动。
+- 测试不依赖执行顺序，不读取本机私有路径，不包含真实凭据。
+- 修改调度适配、Pipeline 端口或写入逻辑时，为边界补测试：核心模块的测试代码也不能 import Quartz 或 DolphinScheduler。
+- 提交前在 JDK 25 上执行 `mvn clean verify`。只在 JDK 17 或 JDK 27 上通过不算满足基线。

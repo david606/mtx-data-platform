@@ -1,0 +1,26 @@
+---
+description: MTX Data Platform 项目命名、技术基线与文档约束
+alwaysApply: true
+---
+
+# MTX Data Platform 基线
+
+项目名称是 MTX Data Platform，简称 MTX RDP。仓库名是 `mtx-data-platform`。Maven `groupId` 与 Java 基础包名都是 `com.mtx.rdp`。根工程 `artifactId` 是 `mtx-data-platform`，`packaging` 是 `pom`。默认分支是 `main`。仓库保持 Private。
+
+技术基线以 `docs/decisions/0001-technology-baseline.md` 为准：
+
+- JDK 25 LTS。不要把 JDK 27 写成当前编译或运行基线。
+- Spring Boot 3.5.16。不要为了追新改到尚未在决策中接受的 Spring Boot 4。
+- Maven 编译 `release` 为 25。
+- ORM 使用 MyBatis-Plus 3.5.18.1 的 `mybatis-plus-spring-boot3-starter`。不要并行再声明 MyBatis 或 MyBatis-Spring 版本。
+- OLAP 存储是 Apache Doris。消息队列是 Apache Kafka。不要替换成其他 OLAP 或 RocketMQ。
+- 初期任务调度是 Quartz 2.5.2。不要引入 XXL-JOB。
+- 工作流演进方向是 Apache DolphinScheduler。当前初始化工程不加入其客户端依赖。
+- 测试使用 JUnit Jupiter 5.12.2。不要换成 TestNG，也不要在未更新决策时升到 JUnit 6。
+- 数据处理是自研 Transform / Pipeline。
+
+没有新的决策记录时，不要替换上述方案，也不要只为了使用最新版本加入未经验证的依赖。
+
+正式详细设计尚未入库。不要编造已经评审通过的表结构、接口契约或 Pipeline 节点设计。这类内容先放在对应文档目录并标明状态，确认前不要写成已定稿实现。
+
+不要提交密钥、口令、Token、证书私钥或真实连接串。

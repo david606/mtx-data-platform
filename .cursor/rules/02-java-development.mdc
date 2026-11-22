@@ -1,0 +1,16 @@
+---
+description: MTX RDP Java 与 Maven 编码约束
+globs: "**/*.{java,xml}"
+alwaysApply: false
+---
+
+# Java 开发
+
+- 包名以 `com.mtx.rdp` 开头，并与模块职责一致。例如服务器入口使用 `com.mtx.rdp.server`。
+- 源码和资源文件使用 UTF-8。Java 编译目标是 `--release 25`。
+- 使用构造器或明确的工厂表达依赖。不要在 Pipeline、Connector、Transform、Writer 中引用 `org.quartz` 或 DolphinScheduler 的类型。
+- 调度适配只放在未来的 `rdp-scheduler` 或 `rdp-integration`。适配层向外暴露平台自己的触发端口，不把框架 Job 类型传到核心模块。
+- MyBatis-Plus 只通过父 POM 管理的 `mybatis-plus-spring-boot3-starter` 引入。不要同时加入 `mybatis-spring-boot-starter`。分页等 SQL 解析插件在真正使用前再选择 `mybatis-plus-jsqlparser` 模块，版本与 MyBatis-Plus 保持一致。
+- 日志使用 Spring Boot 默认的 SLF4J。不要打印密钥、令牌、密码和完整证件号。
+- 不要提交仅用于本地实验的 `application-local` 配置。示例配置使用占位符，不写真实主机、账号和口令。
+- 新增依赖前先确认它与 Spring Boot 3.5.16、JDK 25 和已锁定组件兼容，并写入决策或模块说明。父 POM 未管理的第三方库不要在子模块里随意指定版本。
