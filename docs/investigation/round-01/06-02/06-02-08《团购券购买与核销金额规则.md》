@@ -1,0 +1,24 @@
+# 06-02-08 团购券购买与核销金额规则
+
+证据等级：代码已确认、生产结构已确认、自动化测试已验证、真实报文已验证、生产样本已验证、代码推断、待业务确认、未发现。本轮没有导出生产订单样本，因此没有“生产样本已验证”的金额口径。
+
+生产表 `dwd_trade_group_buy_verification_fact_v1` 的八个金额列是 `DECIMAL(24,6)`，DDL 注释单位为分（06-DB-01-06）。代码在 `FuiouGroupBuyVerificationRows` 16–17、56–60 行把这八个 JSON 数字原样收成 `BigDecimal`：
+
+- 必须是数字，否则整页失败。
+- `scale > 6` 或整数位超过 18 位则失败。
+- 没有 `movePointRight`、`movePointLeft`、`setScale`。
+- 没有分转元或元转分。
+- 字段缺失写成 `null`，不借用旧行，也不把缺失补成 0。注释写三个 0 原样保留。
+
+因此不能把这些小数收成整数分，也不能认定代码做了舍入。原始单位是否已经是“分的小数”，待业务确认。DDL 注释与代码“原样保存”同时成立时，业务单位仍待确认。
+
+字段之间没有计算：
+
+- 代码不解释 `buyPriceAmt` 与 `faceAmt` 的差别。
+- 不解释 `couponAmt` 与 `platHongBao`。
+- 不解释 `mchntIncome` 与 `thirdMchntIncome`。
+- 不从收入里扣 `thirdServiceFee`。
+
+核销次数和张数是整数字段 `checkPayNum`、`checkPayTimes`，不是金额。同一 `couponInfoId` 加 `check_month` 进入唯一键；注释说同月时间修正不应多出一行，月份来自 `checkTm`，非法时间不用执行时间代替。部分核销、失败核销没有在这个映射里改金额。非成功响应码直接抛错，不写行。
+
+团购核销不进入 `OrderTurnoverCalculator`。富智云订单可以因为团购支付把渠道标成 `GROUP_BUY`（`FuiouOrderFactMapper` 395 行附近），那是订单渠道，不是核销表金额。两条链路独立。等级：代码已确认。八个金额的业务关系和是否进入营业额，未发现代码桥接，待业务确认。生产表有数据，本轮未抽样。

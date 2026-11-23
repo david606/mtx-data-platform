@@ -1,0 +1,46 @@
+# 06-02-04 多平台优惠金额与承担方拆分规则
+
+证据等级：代码已确认、生产结构已确认、自动化测试已验证、真实报文已验证、生产样本已验证、代码推断、待业务确认、未发现。本轮没有导出生产订单样本，因此没有“生产样本已验证”的金额口径。
+
+`FuiouRefundContributions` 计算的是富智云退款累计，不是优惠承担拆分。优惠拆分在各平台 `OrderDiscountFactMapper`。
+
+## 富智云
+
+`FuiouOrderDiscountFactMapper.mapDiscount` 79–117 行：
+
+- `benefitAmount` = 该优惠行金额。
+- 承担方：`PLATFORM_RED_PACKET` 为平台，`ROUNDING` 为商家，其余 `UNKNOWN`。
+- 只有承担方匹配时才把同一金额写入 `merchantBearAmount` 或 `platformBearAmount`，另一个为 `null`。
+- `otherBearAmount` 固定 `null`。本 Mapper 没有给 `userBearAmount` 赋值。
+- 注释写明不按比例分摊。赠送只在唯一销售行且费用、实付核对通过时记录 `itemLineKey`。
+
+订单头 `totalDiscountAmount` 直接取 `fullOrderDisAmt`，注释禁止再把优惠行加总，避免团购券、优惠券重复。代码没有断言五行金额之和等于优惠总额。
+
+## 美团
+
+`MeituanOrderDiscountFactMapper` 35–38、66–70、145–151 行：
+
+- `benefitAmount` 来自 `reduceFee`，元转分，且要求为正。
+- `merchantBearAmount` 来自 `poiCharge`，`platformBearAmount` 来自 `mtCharge`。负值被 `nonNegative` 收成 0。
+- `otherBearAmount` 固定 `null`。未发现 `userBearAmount` 赋值。
+- 双方都大于 0 时承担类型为 `SHARED`。
+
+## 淘宝闪购
+
+`TaobaoOrderDiscountFactMapper` 66–95 行：
+
+- `amount`、`restaurantPart`、`elemePart`、`familyPart`、`userPart` 都元转分后取绝对值。
+- 分别写入 `benefitAmount`、`merchantBearAmount`、`platformBearAmount`、`otherBearAmount`、`userBearAmount`。
+- 注释：用户承担必须来自活动原文，不能用订单实付或差额代替。
+
+## 京东
+
+`JdOrderDiscountFactMapper` 361–363 行把 `benefit` 和拆分结果的 merchant、platform、other 写入三列。订单头 `totalDiscountAmount` 目前只取 `orderDiscountMoney`，Mapper 自己的 TODO 写明还没汇总单品、运费、包装优惠。承担方细项是否已稳定，待金额拆分链路确认。
+
+## 写入与等式
+
+`DorisCanonicalFactWriter` 的优惠插入列包含 `benefit_amount`、`merchant_bear_amount`、`platform_bear_amount`、`other_bear_amount`、`user_bear_amount`（约 260 行）。绑定在 `CanonicalNonOrderFactParameterBinder` 131 行，按 Java 字段原值写入，`null` 保持空，不在这里加总。
+
+代码没有规定这五项必须满足某一个等式。退款时优惠是否重分配：富智云退款贡献类不改优惠行；未发现退款 Mapper 重写优惠承担。优惠是否大于商品金额、是否允许负数：富智云优惠金额沿用 `longValue`，美团优惠额要求为正，淘宝取绝对值。不能据此写成统一业务规则。
+
+等级：字段来源代码已确认。五项平衡公式未发现，待业务确认。

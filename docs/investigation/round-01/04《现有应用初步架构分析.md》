@@ -1,0 +1,166 @@
+# 04 现有应用初步架构分析
+
+本文只画已经从代码对上的组件和数据流。线上是否每条箭头都在跑，见文末「待确认」。
+
+## 1. 系统组件
+
+```text
+外部平台
+  富智云 / 京东 / 美团 / 淘宝闪购
+        |
+        | HTTP 回调或 Token
+        v
+trade-ingress
+  Controller -> 验签 -> Storage 原文 -> 来源事件 -> Outbox
+        |                         \
+        |                          \ 需要转发的回调
+        |                           v
+        |                     SSM（Feign V2，服务名配置项）
+        |
+        | 立即通知失败则保留 Outbox
+        v
+trade-analytics
+  Pub/Sub 消费或定时拉取
+  -> 处理账本
+  -> 按来源适配器映射
+  -> 统一订单归并
+  -> Doris 事实表
+        |
+        | 缺详情时反向调用 Ingress 内部接口
+        v
+  京东 / 美团 / 淘宝闪购 / 富智云 查询 API
+
+trade-query
+  已发布查询模板 -> Doris 只读查询
+
+Flink 作业（独立进程，不是 Spring 服务）
+  MySQL binlog -> Storage 原文或维表 -> Doris 版本表 / 维表 / 会员事实
+```
+
+三个 Spring 服务彼此不共用一个进程。依据是三个 `*Application` 和三份生产配置。它们通过 HTTP 内部接口、Redis 通知和同一套 MySQL 库协作。
+
+Storage 没有独立服务。`trade-storage-local` 被 Ingress 和 Analytics 当作库依赖打进进程。依据是两个服务的 POM 都依赖 `trade-storage-local`，以及仓库规则里「当前阶段只采用进程内 Java adapter」。规则文本本身不是运行证据；POM 依赖是已确认。
+
+## 2. 主数据流：一笔外卖或堂食回调
+
+以京东、美团、淘宝闪购为例。富智云订单和支付不走 `ThirdpartyCallbackIngressTemplate`，但后半段相同：都写 Storage、来源事件和 `AnalysisEventDeliveryService`。
+
+```text
+HTTP 原始 body
+  -> 验签
+  -> trade_storage / trade_storage_blob（按 SHA-256 分 100 表）
+  -> trade_order_event 或 trade_payment_event 或 trade_thirdparty_event
+  -> trade_analysis_event_outbox
+  -> Redis 即时通知（失败只记日志）
+  -> AnalysisPubSubConsumer
+  -> trade_analysis_event_process 记账
+  -> StorageReader 读回原文字节
+  -> Fuiou/Jd/Meituan/Taobao TradeSourceAdapter
+  -> CanonicalWriteCoordinator
+  -> DorisCanonicalFactWriter
+  -> dwd_trade_order_fact_v1 及明细、优惠、支付、退款表
+  -> Ingress ACK（来源事件 acked）
+```
+
+证据类：
+
+- 前半段：`ThirdpartyCallbackIngressTemplate.ingest`、`OrderController.storePush`。
+- 通知：`AnalysisEventDeliveryService.dispatchImmediately`。失败文案写明 persistent outbox remains。
+- 后半段：`AnalysisPubSubConsumer`、`AnalysisEventProcessingService`、`DorisCanonicalFactWriter`。
+
+同一订单的多次回调不会各写一份最终订单。来源事件按消息版本保留多行；最终订单由归并器按版本推进。依据是来源表唯一键包含 `message_version`，以及存在 `CanonicalOrderReducer`、`DomainWatermark`。水位的精确定义本轮没有复述设计文档，等级：已确认有版本和归并；「旧版本永远不能覆盖新版本」需要下一轮读归并器分支后再标已确认。
+
+## 3. 补拉数据流
+
+回调只有订单号、没有完整商品或退款明细时：
+
+```text
+Analytics 定时任务或 Kafka 主题 tradePickupDue
+  -> trade_analysis_pickup_task
+  -> Ingress 内部 HTTP（带内部签名）
+  -> Ingress 调用京东 / 美团 / 淘宝闪购 / 富智云
+  -> 查询响应写入 Storage
+  -> trade_source_query_event
+  -> 再次进入分析处理
+```
+
+已对上的任务类：`JdPickupTask`、`MeituanOrderPickupTask`、`MeituanRefundPickupTask`、`TaobaoPickupTask`、`FuiouGroupBuyVerificationSyncTask`、`FuiouStoreMemberSyncTask`。
+
+团购核销不进来源事件表。`FuiouGroupBuyVerificationSyncService` 直接 Stream Load 到 `dwd_trade_group_buy_verification_fact_v1`。这是和订单主链平行的第二条写入方式。
+
+## 4. 转发 SSM 的数据流
+
+```text
+已保存的回调
+  -> trade_event_delivery_task
+  -> ThirdpartyDeliveryTask
+  -> SsmCallbackBridge
+  -> SsmCallbackFeignClientV2
+  -> 内部系统 SSM
+  -> trade_event_delivery_attempt_log
+```
+
+`SsmCallbackBridge` 按来源系统和事件类型选择 SSM 路径。响应码不是 200 就抛 `SsmCallbackDeliveryException`。它不负责重试；重试在投递任务服务。
+
+哪些事件类型必须转发，本轮没有把路由表读完。等级：转发机制已确认；每个平台的转发名单待确认。
+
+## 5. Flink CDC 数据流
+
+`TradeCdcJob` 只订阅两张表的 binlog：
+
+- `trade_order_event`
+- `trade_payment_event`
+
+也就是富智云订单和支付事件。注释写明 ACK 更新在反序列化阶段被忽略。然后按事件上的 Storage 双键读原文，标准化，写入 Doris 版本表。
+
+它不读取 `trade_thirdparty_event`。因此京东、美团、淘宝闪购不在这条 CDC 作业的源表清单里。等级：已确认源表清单。若另有作业订阅第三方事件表，本轮未发现。
+
+门店、商品、会员是另外三个 Flink 作业，源是 Analytics 侧 MySQL 维表或会员表，目标是 Doris。它们不解析订单回调。
+
+## 6. 查询数据流
+
+```text
+调用方
+  -> POST /internal/query/execute
+  -> HMAC 内部签名（注解 InternalApiSignature）
+  -> 按 brandId + systemCode + templateCode + version 找已发布模板
+  -> Doris 只读执行
+  -> ResponseData<QueryResult>
+```
+
+模板的草稿、审核、发布在 `QueryTemplateController`。模板行在 `trade_analysis_query_template`。Query 服务和 Analytics 服务是否连同一套模板表，从 init SQL 看模板表在 `trade_analytics` 脚本中。Query 模块有自己的 MySQL entity `QueryTemplateDO`。是否同一数据源，待看 Query 的数据源 URL，本轮只在 Analytics 生产 YAML 里看到 `trade_analytics`。等级：模板表归属 MySQL `trade_analytics` 已由 init SQL 确认；Query 进程的 JDBC URL 待确认。
+
+## 7. 事务和失败时停在哪里
+
+| 位置 | 已看到的边界 |
+| --- | --- |
+| 接入 | 验签失败不写事件。存储成功但解析或写事件失败时，原文可能已经在 Storage，失败审计记录 `storageId`。模板注释说这是有意的：失败报文仍能被引用。 |
+| 来源事件 | 唯一键冲突视为重复，不生成第二行。京东售后有一次额外的原文比较。 |
+| 分析 | 账本状态、业务终态、ACK 分开。类注释禁止 ACK 失败把业务结果改回去。 |
+| Doris 写入 | 刷写任务表 `trade_analysis_flush_task_*` 和事实写任务表存在。Kafka 只发「可以刷了」的通知。通知丢失时还有 `CanonicalFlushTask` 定时扫描。 |
+| 下游 SSM | 失败留在投递任务里，不回滚已经保存的来源事件。这是从「先保存再投递」的结构推断的事务分离，等级：推断。需要下一轮看投递与来源事件是否同一个数据库事务。 |
+
+分析处理服务使用 `TransactionTemplate`。Doris 写入是否和 MySQL 账本同一个事务，从组件上看不可能：Doris 是另一个数据库。代码用任务表把「MySQL 里已决定要写」和「Doris 已写完」拆开。等级：已确认是两个数据库；补偿的每一种失败组合没有在本轮穷举。
+
+## 8. 幂等和重复请求
+
+| 对象 | 控制点 | 等级 |
+| --- | --- | --- |
+| 原文字节 | `putIfAbsent`，唯一键 `(source_system, payload_sha256)` | 已确认 |
+| 富智云订单事件 | `(source_system, third_event_key, message_version)` | 已确认 |
+| 富智云支付事件 | `(source_system, third_event_key)`，注释写明是 `paySsn` | 已确认 |
+| 外卖回调事件 | `(source_system, third_event_key, message_version)` | 已确认 |
+| 分析广播 | Redis `AnalysisPubSubDeliveryLock` 按 `outboxId` | 已确认锁存在。锁失效时的第二道防护是处理账本，待读 claim SQL |
+| 同订单并发写 | Redis `OrderWriteLease` | 已确认类存在 |
+| 团购核销重复行 | 注释写明靠 Doris 唯一键覆盖 | 已确认注释和写入方式。唯一键列名要对照 Doris DDL，本轮未抄列 |
+
+## 9. 和「一个简单处理程序」的差别
+
+如果预期是「一个接口收下 JSON，转成几张业务表」，当前代码不是这个形状。它至少有四段：
+
+1. 接入和原文留存。
+2. 来源事件与可靠通知。
+3. 统一事实归并和 Doris。
+4. 模板查询。
+
+另外还有主数据同步、补拉、质检、回灌、SSM 转发和四套 Flink 作业。后续 V2 设计应把这些当成已经存在的能力边界，而不是假设线上只有一组订单表。

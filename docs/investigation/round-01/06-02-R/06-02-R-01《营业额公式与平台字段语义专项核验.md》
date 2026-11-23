@@ -1,0 +1,34 @@
+# 06-02-R-01 营业额公式与平台字段语义专项核验
+
+本轮只读代码、仓库内接口摘录和已完成的 06-02、06-DB-01-06。没有改代码，没有查生产业务行，没有把设计文档或代码注释写成官方字段定义。
+
+营业额只由 `OrderTurnoverCalculator.calculate` 计算，`CanonicalOrderReducer` 第 478 行写入 `turnoverAmount`。四个订单 Mapper 只提供输入，不算营业额。
+
+## 已实现公式
+
+| 平台 | 公式 | 代码 |
+| --- | --- | --- |
+| 京东 | `userPayAmount + totalDiscountAmount` | `OrderTurnoverCalculator` 20–22 行 |
+| 美团、淘宝 | `orderDiscountBaseAmount - userDeliveryFeeAmount` | 29–30 行 |
+| 富智云 | 上一式再加上 `PACKAGE_PRICE_DISCOUNT` 的 `benefitAmount`，保留正负号 | 51–58 行 |
+
+包装费不进入这几个公式。退款额也不进入。配送费只在美团、淘宝、富智云的公式里被减掉。京东公式不减配送费。
+
+## 字段语义分层
+
+| 项 | 代码赋值 | 仓库接口摘录 | 仍待确认 |
+| --- | --- | --- | --- |
+| 京东计价基数 | `orderTotalMoney` → `orderDiscountBaseAmount`。`JdOrderFactMapper` 130–133 行 | `docs/references/jd/jd.o2o.order.es.query.md` 201 行：销售价总额 = Σ(skuJdPrice × skuCount) | 摘录没有写它是否含包装费、配送费 |
+| 京东实付 | `orderBuyerPayableMoney` → `userPayAmount`，137 行 | 同文件 210 行：用户应付金额，单位分 | 摘录没有写是否已含餐盒费和运费。计算器注释说实付已含餐盒费，这是代码注释，不是摘录原文 |
+| 京东订单级优惠 | `orderDiscountMoney` → `totalDiscountAmount`，138–141 行 | 202 行：订单级优惠商品金额，不含单品促销和运费优惠 | 摘录没有写“包装优惠”。代码注释写不含包装优惠 |
+| 京东餐盒费 | 商品行 `canteenMoney` 求和 → `packingFeeAmount`。任一行非法则整单为空。179–191 行。不用 `packagingMoney` | 284 行：商品总餐盒费。211 行另有订单级包装金额 | 两列都存在。代码选择餐盒费汇总，没有证明 `packagingMoney` 应被忽略的官方公式 |
+| 京东配送费 | `orderFreightMoney` → `userDeliveryFeeAmount`，145 行 | 203 行：用户实际支付运费 | 该列不进入京东营业额公式 |
+| 富智云基数 | `orderDisAmt` → `orderDiscountBaseAmount`。`FuiouOrderFactMapper` 133–134 行 | `docs/references/fuiou/api.md` 22 行：订单原单金额，单位分，不含快递费、优惠券、积分优惠、手动打折 | 摘录没有写是否含餐盒费 |
+| 富智云实付 | `payAmt` → `userPayAmount` | 同文件 23 行：实付 = 商品折扣后价格 + 快递费 − 各类优惠 | 这是摘录公式，本轮没有用真实报文验算 |
+| 富智云套餐调整 | `packagePriceDisAmt` 成为优惠行 `PACKAGE_PRICE_DISCOUNT`。`FuiouOrderDiscountFactMapper` 187–194 行。计算器 53–54 行禁止取绝对值 | 摘录 91 行只写“套餐折扣优惠金额”，类型 Long，没有正负说明。同文件 90 行的抹零金额明确可以是负数 | 套餐字段会不会为负，待业务确认。代码按可正可负处理 |
+| 美团 | `originalPrice` 同时写原价和基数；`total` 同时写优惠后金额和实付；`shippingFee` 写配送费。`MeituanOrderFactMapper` 125–132 行 | `docs/references` 下没有美团字段摘录 | `total` 是否等于用户实付、`originalPrice` 是否已含配送费，待接口原文 |
+| 淘宝 | 仅快照事件：`originalPrice` 写商品原价和基数，`totalAmount` 写订单原价，`totalPrice` 写优惠后金额和实付，`deliverFee` 写配送费。`TaobaoOrderFactMapper` 120–129 行 | `docs/references` 下没有淘宝字段摘录 | `totalPrice` 是否等于用户实付，待接口原文 |
+
+设计文档 `docs/design/doris/多平台CDM基础事实表设计.md` 与代码公式一致，并写了美团实付不含商品券购买额。那是项目设计，不是本轮看到的平台接口原文，不能标成真实报文已验证。
+
+配送费是否应该从营业额扣除：美团、淘宝、富智云的代码已经扣除；京东代码不扣除。仓库没有美团、淘宝接口原文证明 `originalPrice` 里有没有配送费。这项保持待业务确认。

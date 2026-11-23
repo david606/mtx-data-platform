@@ -1,0 +1,29 @@
+# 06-02-05 多平台支付金额与支付状态处理规则
+
+证据等级：代码已确认、生产结构已确认、自动化测试已验证、真实报文已验证、生产样本已验证、代码推断、待业务确认、未发现。本轮没有导出生产订单样本，因此没有“生产样本已验证”的金额口径。
+
+## 富智云
+
+`FuiouPaymentFactMapper.map` 40–64 行：一条支付回调生成一条支付事实。`paymentId` 是 `paySsn`，`paymentLineKey` 固定 `PRIMARY`。`paidAmount` 取 `payAmt`，`paymentFeeAmount` 取 `feeAmt`，都是 `longValue`，不本地计算手续费。另有 `faceAmt` 写入券面额字段。`payState` 决定支付状态。`refundTm` 只作为冲正时间，不把退款金额写进支付金额。
+
+一单多笔：不同 `paySsn` 会成为不同 `paymentId`。代码没有把一笔支付拆成多渠道多行。组合支付是否在报文里本来就是多条 `paySsn`，待业务确认。
+
+## 美团
+
+`MeituanPaymentFactMapper` 46 行：`paidAmount` 来自订单支付金额变量，`paymentMethod` 固定 `OTHER`，`sourcePaymentMethod` 固定 `"2"`。未发现手续费字段赋值。支付失败是否落事实，要看 Handler 是否在未支付时仍调用该 Mapper。订单 Mapper 在支付信息在场时把未在线支付标成 `UNPAID`，在线支付标成 `PAID`。支付成功和订单完成是两个状态字段。代码已确认。
+
+## 淘宝闪购
+
+`TaobaoPaymentFactMapper` 28 行只写入 `paidAmount`，支付方式 `OTHER`。未发现手续费映射。
+
+## 京东
+
+未发现 `JdPaymentFactMapper`。买家应付在 `JdOrderFactMapper.userPayAmount`，来自 `orderBuyerPayableMoney`。支付状态来自 `orderPayType`。因此京东“支付成功金额”目前没有独立事实行，不能把订单实付列说成支付事实表已归集。代码已确认未发现独立支付 Mapper。
+
+## 重复与失败
+
+Doris 支付表唯一键含 `payment_id` 与 `payment_line_key`（06-DB-01-06）。同一键后写覆盖前写，顺序受 `meta_sink_sequence` 约束。富智云支付版本号用 `FuiouFinancialSequence.ordinary`。失败支付：富智云 Mapper 仍按 `payState` 映射状态，不是失败就丢弃；具体哪些状态码算失败要看 `SourcePaymentStatus`。本轮没有把全部状态枚举展开成业务结论。
+
+充值余额、赠送余额不在支付 Mapper 里拆成支付行。赠送进入优惠行 `STORED_VALUE_GIFT`，充值进入充值事实。它们和订单支付的关联待业务确认，代码没有做自动勾稽。
+
+等级：富智云支付金额和手续费来源代码已确认。美团、淘宝只有实付金额映射。京东无独立支付事实。生产支付行是否与订单实付一致，生产样本未验证。

@@ -1,0 +1,22 @@
+# 06-02-06 充值与赠送金额处理规则
+
+证据等级：代码已确认、生产结构已确认、自动化测试已验证、真实报文已验证、生产样本已验证、代码推断、待业务确认、未发现。本轮没有导出生产订单样本，因此没有“生产样本已验证”的金额口径。
+
+只有富智云有 `FuiouRechargeFactMapper`。京东、美团、淘宝未发现充值 Mapper。
+
+`map` 31–58 行：
+
+- 成功充值金额取 `payAmt`。冲正状态取 `refundAmt`，没有则退回 `payAmt`。
+- 写入前 `Math.abs`。`Long.MIN_VALUE` 直接抛错，避免绝对值溢出。
+- `giftAmount` 取 `giveAmt`，不做绝对值。
+- `paymentFeeAmount` 取 `feeAmt`。
+- `direction`：成功为 `CREDIT`，冲正为 `DEBIT`，无法识别的 `payState` 抛错。
+- `rechargeId` 是 `paySsn`。冲正时 `originalRechargeId` 取 `sourcePaySsn`。
+
+充值成功与失败由 `rechargeStatus(root)` 决定，本文件把未知状态挡在方向赋值之外。未在本方法里看到“失败也写一条零金额”。
+
+赠送金额是否进入订单：订单优惠 Mapper 把储值赠送记成 `STORED_VALUE_GIFT`。Reducer 计算富智云商家收入时从实付中减去该赠送和已完成退款（`fuiouMerchantIncome`，627–638 行）。这不是把充值金额加进营业额。`OrderTurnoverCalculator` 不读取 `rechargeAmount` 或 `giftAmount`。
+
+退款时本金和赠送：充值冲正走充值事实的 `DEBIT`。订单退款不在充值 Mapper 里拆本金和赠送。商品净收入在正赠送且已有退款时拒绝继续扣旧赠送额（579–583 行），因为没有赠送返还证据。
+
+不能把充值金额当成订单营业额。等级：代码已确认。充值报文里 `payAmt` 的单位沿用富智云整数读取，原始单位待业务确认。生产充值表有分区行数（06-DB-01-06），但本轮没有抽样核对。

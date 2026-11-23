@@ -1,0 +1,266 @@
+# 01 现有应用工程结构调查
+
+调查对象：当前打开的本地仓库 `/Users/waynegao/Workspace/projects/pbzProjects/trade-flow`。
+
+结论先说清楚：这个仓库的 Maven 工程名是 `trade-flow`，描述是「Trade Flow 多模块聚合工程」。它已经按接入、原文存储、分析加工、查询和 Flink 作业拆开。本轮没有在本仓库里找到另一个更早、更小、名字叫「简单数据处理应用」的独立工程。如果口头说的「V2 之前的简单应用」指的是别的仓库，那份代码不在本次调查范围内。
+
+证据等级：已确认。依据是根 `pom.xml` 的 `artifactId`、`description` 和 `<modules>`。
+
+本文件只记录目录和职责。业务规则见 03，调用关系见 04。
+
+## 1. 根目录
+
+| 路径 | 职责 | 证据 |
+| --- | --- | --- |
+| `pom.xml` | 聚合工程。父 POM 是 Spring Boot `3.3.5`。模块见下一节。 | 已确认 |
+| `trade-common` | 交易域公共枚举、异常、轻量 DTO、协议常量。不放 Mapper 和数据库实现。 | 已确认，见该模块 `pom.xml` 与包 `com.mtx.trade.common` |
+| `trade-storage-api` | 原文存储对外端口：`StorageWriter`、`StorageReader` 和 DTO。 | 已确认，包 `com.mtx.trade.storage.api` |
+| `trade-storage-local` | 原文存储的 MySQL 实现、100 张分表、归档任务。 | 已确认，模块描述「Storage 单机 MySQL 持久化 adapter」 |
+| `trade-ingress` | 可运行服务。接收第三方回调，验签，保存原文和来源事件，再通知分析侧，并把部分回调转发给 SSM。 | 已确认，入口类 `TradeIngressApplication` |
+| `trade-analytics` | 可运行服务。消费来源事件，映射成统一订单事实，写入 Doris，并做补拉、主数据、质检和回灌。 | 已确认，入口类 `TradeAnalyticsApplication` |
+| `trade-query` | 可运行服务。管理查询模板，并对 Doris 做只读查询。 | 已确认，`trade-query/pom.xml` 的 description |
+| `trade-flink-job` | 四个 Flink 作业的聚合 POM，本身不是 Spring Boot 服务。 | 已确认 |
+| `mtx-core` | 磁盘上有 `mtx-security`、`mtx-messaging`、`mtx-scheduled`、`mtx-id`、`mtx-dataretention`。根 POM **没有**把它列为模块。业务模块通过 Maven 依赖 `com.mtx.core` 使用它。 | 已确认目录存在；它是不是当前唯一事实来源，待确认 |
+| `docs/sql/init` | 当前初始化 SQL。本轮数据库结论以这里和代码为准。 | 已确认 |
+| `docs/sql` | 未执行迁移脚本的约定位置。本轮未逐份核对是否还有未执行脚本。 | 待确认是否存在未合并变更 |
+| `docs/design` | 已有设计文档，例如 ingress、analytics、storage、CDM。本轮结论不把设计文档当成代码已经做到的证据。 | 已确认文件存在 |
+| `docs/references` | 外部参考，看到 `fuiou`、`jd`。本轮未把参考材料当成运行契约。 | 已确认目录存在 |
+| `ops` | 运维工具：Grafana、数仓运维、脚本、京东验收小工程。 | 已确认目录存在；哪些已在生产使用，待确认 |
+| `scripts` | 仓库级脚本。本轮未逐个执行。 | 已确认目录存在 |
+| `.github/workflows` | CI 工作流。本轮未展开每个检查项。 | 已确认目录存在 |
+
+`docs/status` 和 `docs/runtime_example_data` 按仓库规则不作为本轮事实来源，没有读取。
+
+`src/` 不在仓库根上。Java 代码都在各 Maven 模块的 `src/main/java`。主代码 Java 文件约 1298 个。这是目录统计，不是业务规模判断。
+
+没有 Gradle 工程文件。构建方式是 Maven。已确认。
+
+## 2. Maven 模块
+
+根 `pom.xml` 声明的模块：
+
+1. `trade-common`
+2. `trade-storage-api`
+3. `trade-storage-local`
+4. `trade-ingress`
+5. `trade-analytics`
+6. `trade-query`
+7. `trade-flink-job`
+
+`trade-flink-job/pom.xml` 再聚合：
+
+1. `trade-cdc`：描述为「基于 Flink CDC 实现 MySQL 到 Doris 的数据同步」。
+2. `trade-shop-cdc`：MySQL 门店维表到 Doris。
+3. `trade-goods-cdc`：MySQL 商品维表到 Doris。
+4. `trade-member-cdc`：品牌与门店会员当前事实到 Doris。
+
+`ops/jd-acceptance` 有自己的 `pom.xml`，不是根聚合模块。它的生产地位待确认。
+
+可启动的 Spring Boot 应用有三个：
+
+- `com.mtx.trade.ingress.TradeIngressApplication`
+- `com.mtx.trade.analytics.TradeAnalyticsApplication`
+- `com.mtx.trade.query.TradeQueryApplication`
+
+## 3. Java 包职责
+
+### 3.1 `trade-common`：`com.mtx.trade.common`
+
+| 包 | 职责 |
+| --- | --- |
+| `enums` | 跨服务编码。已看到 `SourceSystem`、`ContentType`、`AnalysisEventKind`、`PlatformCode`。 |
+| `dto` | 跨模块传输对象，含 `analysis`、`fuiou`、`jd`、`ssm`。 |
+| `exception` | 业务异常，例如 `BusinessException`。 |
+| `security` | 内部接口签名相关类型。 |
+| `thirdparty.taobao` | 淘宝闪购事件类型等共享定义。 |
+| `alert`、`observability`、`config`、`constants`、`utils`、`version` | 告警、观测、配置和工具。 |
+
+### 3.2 `trade-storage-api` / `trade-storage-local`
+
+- API：`com.mtx.trade.storage.api`。Ingress 和分析侧通过 `StorageWriteCommand`、`StorageRef`、`StorageReader` 读写原文。
+- Local：`entity`、`mapper`、`service.db`、`archive`、`task`、`config`。分表和归档实现在这里。
+
+### 3.3 `trade-ingress`：`com.mtx.trade.ingress`
+
+| 包 | 职责 |
+| --- | --- |
+| `controller` | HTTP 入口。外部回调和内部查询、补拉、运维接口都在这里。共 39 个 Controller。 |
+| `thirdparty.fuioupay` | 富智云验签、报文解析、失败推送恢复、团购核销和门店/商品查询客户端。 |
+| `thirdparty.jd` | 京东回调适配、订单查询、售后包。 |
+| `thirdparty.meituan` | 美团回调适配、订单详情和退款查询。 |
+| `thirdparty.taobao` | 淘宝闪购回调适配。依赖里有饿了么开放平台 SDK。 |
+| `thirdparty.ssm` | 把回调转发到内部 SSM 的 Feign 桥。 |
+| `thirdparty.callback` | 第三方回调统一适配接口。 |
+| `service` | 接入编排。统一模板是 `ThirdpartyCallbackIngressTemplate`。 |
+| `service.db` | Ingress 自己的 MyBatis-Plus 数据服务。 |
+| `entity` / `mapper` | `trade_flow` 库的接入表。 |
+| `task` | 投递、Outbox、回调延迟观察等定时任务。 |
+| `config` | 调度器和数据源装配。`IngressTaskSchedulerConfiguration` 打开了 `@EnableScheduling`。 |
+
+### 3.4 `trade-analytics`：`com.mtx.trade.analytics`
+
+| 包 | 职责 |
+| --- | --- |
+| `pipeline` | 接收 Ingress 通知，记账，重试，ACK。核心类 `AnalysisEventProcessingService`、`AnalysisPubSubConsumer`。 |
+| `preparation.adapter` | 四个来源适配器：富智云、京东、美团、淘宝闪购。 |
+| `preparation.source.*` | 各来源的字段映射：订单、明细、优惠、支付、退款。 |
+| `preparation.state` | 统一订单状态归并。核心类 `CanonicalWriteCoordinator`、`CanonicalOrderReducer`。 |
+| `preparation.preprocess` | 报文清洗，例如非法 Unicode。 |
+| `persistence` | 把统一事实写入 Doris。核心类 `DorisCanonicalFactWriter`。 |
+| `trigger.scheduling` | 补拉、门店、商品、会员、团购核销等定时任务。 |
+| `maintenance.enrichment` | 主数据补齐和补拉任务实现。 |
+| `maintenance.backfill` | 历史回灌。 |
+| `maintenance.quality` | 数据质量规则、运行和问题。 |
+| `infrastructure.mysql.runtime` | 分析运行账本、刷写任务、处理状态。 |
+| `infrastructure.mysql.catalog` | 门店、商品等维表。 |
+| `infrastructure.doris` | Doris 查询侧基础设施。 |
+| `infrastructure.redis` | 订单写租约等 Redis 用途。 |
+| `infrastructure.http` | 回调 Ingress 内部接口、调用 SSM。 |
+| `api.admin` | 同步、回灌、补拉、质检的管理接口。 |
+| `api.query` | 分析服务内还有一套查询代码。和独立的 `trade-query` 是否同时在线，待确认。 |
+
+### 3.5 `trade-query`：`com.mtx.trade.query`
+
+| 包 | 职责 |
+| --- | --- |
+| `api.query` | 模板管理和 `POST /internal/query/execute`。 |
+| `api.masterdata` | 主数据和枚举查询。 |
+| `infrastructure.doris` | Doris 只读执行。 |
+| `infrastructure.mysql` | 查询模板存在 MySQL。 |
+| `task` | 模板缓存、堂食门店分组缓存刷新。 |
+
+### 3.6 Flink
+
+`trade-cdc` 的 `TradeCdcJob` 监听 `trade_order_event`、`trade_payment_event` 的插入，再按 `storageId + payloadSha256` 读原文，标准化后写入 Doris 版本表。类注释写的是「Doris 六张版本表」。
+
+`trade-shop-cdc`、`trade-goods-cdc`、`trade-member-cdc` 是 MySQL 维表或会员事实到 Doris 的独立作业。
+
+`trade-cdc` 和另外三个作业的 Flink 版本不同，见技术栈报告。它们是否都在生产运行，待确认。
+
+## 4. 配置文件放在哪里
+
+三个 Spring 服务都使用 `src/main/resources/nacos/` 作为生产配置基准，另外有 `nacos-local/`、`nacos-test/`。
+
+已看到的生产基准文件包括：
+
+- Ingress：`trade-ingress/src/main/resources/nacos/trade-ingress-infra-prod.yaml`，其中有 Redis。
+- Analytics：`trade-analytics/src/main/resources/nacos/trade-analytics-infra-prod.yaml`，其中有 Kafka、Redis、Doris、MySQL。
+- Analytics 还有 `trade-analytics-core.yaml`、`trade-analytics-runtime.yaml`、`trade-analytics-thread-pools.yaml`。
+- Query：`trade-query/src/main/resources/nacos/trade-query-runtime.yaml`。
+
+逻辑库名在初始化 SQL 和配置里都能对上：
+
+- MySQL `trade_flow`：接入和原文。
+- MySQL `trade_analytics`：分析账本、维表、查询模板。
+- Doris `trade_warehouse`：分析事实和维表副本。
+
+具体主机、账号、密码属于环境配置。本报告不抄录密钥。测试配置里出现过明文口令，是否只用于测试环境，待确认。
+
+## 5. 数据库脚本
+
+当前初始化脚本：
+
+| 文件 | 逻辑库 | 证据 |
+| --- | --- | --- |
+| `docs/sql/init/trade-flow-init.sql` | MySQL `trade_flow` | 文件头和 `CREATE DATABASE` |
+| `docs/sql/init/trade-analytics-init.sql` | MySQL `trade_analytics` | `CREATE TABLE` 清单 |
+| `docs/sql/init/trade-doris-init.sql` | Doris `trade_warehouse` | 版本表、维表和 `dwd_trade_*_fact_v1` |
+| `docs/sql/init/trade-doris-fact-v1-init.sql` | 同一套事实表的辅助脚本 | 文件头语义需要和运维确认后才能执行；本轮未执行 |
+
+表清单和键见 03 的数据库一节。不要只看 Entity 类名补全模型；本轮表名来自这些 `CREATE TABLE`。
+
+## 6. 定时任务分布
+
+调度开关：
+
+- Ingress：`IngressTaskSchedulerConfiguration` 有 `@EnableScheduling`。
+- Analytics：`TradeAnalyticsApplication` 有 `@EnableScheduling`。
+- Query：`TradeQueryApplication` 有 `@EnableScheduling`。
+
+已确认存在 `@Scheduled` 的类（只列职责，不把 cron 当成业务规则全文）：
+
+| 类 | 能从代码直接看出的职责 |
+| --- | --- |
+| `ThirdpartyDeliveryTask` | 回调转发给下游的投递任务 |
+| `AnalysisOutboxDeliveryTask` | 分析事件 Outbox 投递 |
+| `FuiouRecoveryPushScheduled` | 富智云失败推送恢复 |
+| `FuiouCallbackDelayReportTask` | 富智云回调延迟观察 |
+| `StorageArchiveTask` / `StorageArchiveCleanupTask` | 原文归档和热数据清理 |
+| `AnalysisOutboxPullTask` | Analytics 主动拉取尚未处理的 Outbox |
+| `AnalysisProcessRetryTask` | 处理失败重试 |
+| `AnalysisAckRetryTask` | 处理完成后的 ACK 重试 |
+| `CanonicalFlushTask` | 把待刷写事实送往 Doris |
+| `AnalysisFactWriteDispatchTask` | 事实写任务分发 |
+| `JdPickupTask`、`MeituanOrderPickupTask`、`MeituanRefundPickupTask`、`TaobaoPickupTask` | 外卖订单或退款补拉 |
+| `FuiouGroupBuyVerificationSyncTask` | 富智云团购核销明细同步 |
+| `FuiouStoreMemberSyncTask` | 门店会员同步 |
+| `ShopSyncTask`、`GoodsSyncTask`、`JdShopSyncTask`、`JdGoodsSyncTask`、`TaobaoShopSyncTask`、`TaobaoGoodsSyncTask`、`MeituanShopInfoSyncTask` | 各平台门店或商品同步 |
+| `QualityInspectionTask` | 质检扫描 |
+| `AnalysisBackfillRecoveryTask` | 回灌恢复 |
+| `QueryTemplateCacheRefreshTask` | 查询模板缓存 |
+
+`ClusterScheduledAdoptionContractTest` 说明 Analytics 里哪些定时方法走集群调度、哪些仍用 Spring 原生调度。完整分级清单本轮没有逐条抄出。
+
+没有发现 XXL-JOB 注解。定时框架是 Spring `@Scheduled`，部分任务再叠加自研集群调度和 Redis 锁。已确认「有 Spring 调度」；「没有第二套调度平台」只在当前 Java 源码范围内成立。
+
+## 7. 外部 HTTP 入口分组
+
+完整路径以 Controller 注解为准。这里按谁调用分组。
+
+### 7.1 外部平台打进来的回调
+
+| 路径 | 类 | 来源 |
+| --- | --- | --- |
+| `POST /order/store-push` | `OrderController` | 富智云订单 |
+| `POST /payment/store-push` | `PaymentController` | 富智云支付 |
+| `POST /fzy/member_sync` | `FzyController` | 富智云会员。代码写明只打日志并返回成功 |
+| `POST /jd/djsw/{messageType}` | `JdController` | 京东 |
+| `POST /jd/acceptToken` | `JdController` | 京东授权 Token |
+| `GET/POST /mt/{eventType}` | `MeituanController` | 美团。事件类型必须在白名单 |
+| `GET/POST /tb/acceptOrder` | `TaobaoController` | 淘宝闪购 |
+
+### 7.2 服务之间的内部接口
+
+Ingress 给 Analytics 的补拉、目录、Outbox、ACK，路径多以 `/internal/` 开头。例如：
+
+- 京东：`/internal/jd/pickup/order-query`、`/internal/jd/afs-*`、商品和门店目录。
+- 美团：`/internal/meituan/pickup/*`、`/internal/meituan/orders/part-refund-foods`。
+- 淘宝闪购：`/internal/taobao/pickup/*`、`/internal/taobao/catalog/*`。
+- 富智云：`/internal/fuiou/shops/list`、`/internal/fuiou/goods/list`、`/internal/fuiou/group-buy-verifications/query`、`/internal/fuiou/store-members/query`。
+- 分析事件：`/internal/analysis-events/*`、`/internal/analysis-outbox/claim`、`/internal/event-delivery/*`。
+
+Query 对调用方暴露：
+
+- `POST /internal/query/execute`
+- `/internal/query/templates/**`
+- `/internal/master-data/**`
+
+这些内部接口是否对公网开放，代码本身不能证明，待确认部署边界。
+
+### 7.3 健康检查
+
+三个服务都有 `/ping`。Ingress 另有部署排空探测和性能快照。
+
+## 8. 核心业务类（第一轮入口）
+
+| 类 | 一句话职责 |
+| --- | --- |
+| `OrderController` / `PaymentController` | 富智云订单、支付回调的专用入口 |
+| `ThirdpartyCallbackIngressTemplate` | 京东、美团、淘宝闪购共用：验签、存原文、写来源事件、入分析通知 |
+| `OrderEventServiceImpl` / `PaymentEventServiceImpl` / `ThirdpartyEventServiceImpl` | 用来源和消息版本做幂等写入 |
+| `StorageWriteService` | 按内容 SHA-256 保存原文，已存在则不重复写 |
+| `SsmCallbackBridge` | 把需要转发的回调交给 SSM V2 |
+| `AnalysisPubSubConsumer` | 收到低延迟通知后交给处理服务 |
+| `AnalysisEventProcessingService` | 处理账本、调用来源适配器、写事实、向 Ingress ACK |
+| `TradeSourceAdapterRegistry` | 按 `SourceSystem` 找到唯一适配器 |
+| `CanonicalWriteCoordinator` | 把一次来源变化合并进统一订单状态 |
+| `DorisCanonicalFactWriter` | 把订单、明细、优惠、支付、退款等写入 Doris 事实表 |
+| `FuiouGroupBuyVerificationSyncService` | 拉取富智云团购核销明细并 Stream Load 到 Doris |
+| `QueryExecuteController` | 按已发布模板执行 Doris 查询 |
+| `TradeCdcJob` | 另一条从富智云订单/支付事件表到 Doris 版本表的 CDC 链路 |
+
+## 9. 本轮结构调查的边界
+
+- 未逐个打开 1298 个 Java 文件。包职责来自目录和已读入口类。
+- 未执行构建，也未连接数据库核对线上表是否和 init SQL 一致。
+- `mtx-core` 源码在磁盘上，但是依赖版本以各模块 `pom.xml` 为准，不以旁边目录的未提交状态为准。

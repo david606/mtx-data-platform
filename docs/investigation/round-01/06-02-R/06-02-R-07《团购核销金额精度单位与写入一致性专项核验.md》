@@ -1,0 +1,25 @@
+# 06-02-R-07 团购核销金额精度、单位与写入一致性专项核验
+
+本轮只读代码、仓库内接口摘录和已完成的 06-02、06-DB-01-06。没有改代码，没有查生产业务行，没有把设计文档或代码注释写成官方字段定义。
+
+八个金额列：`buy_price_amt`、`coupon_amt`、`face_amt`、`face_value`、`mchnt_income`、`plat_hong_bao`、`third_mchnt_income`、`third_service_fee`。
+
+`FuiouGroupBuyVerificationRows` 56–60 行：必须是 JSON 数字，`scale > 6` 或整数位超过 18 则整页失败。不做舍入，不乘除 100。缺失写成 `null`，数字 0 保留。70–71 行注释写明三个 0 原样保留。
+
+仓库 `docs/references/fuiou/api.md` 没有这八个核销查询字段的单位说明。DDL 注释单位为分，代码不转换。原始单位待业务确认。
+
+没有字段之间的平衡公式。`third_service_fee` 不会从收入里扣掉。`result` 非 0 也原样保存，测试 `nonZeroResultIsKeptWithoutFilteringOrTranslatingItsMeaning` 只断言保留字符串 `"1"`，没有把非 0 解释成失败或成功。
+
+## 唯一键和月份
+
+生产唯一键是 `brand_id, coupon_info_id, check_month`。`check_month` 取 `checkTm` 的日期并把日改成 1，75–80 行。非法或缺失时间直接失败，不用同步执行日代替。
+
+同月内修改时分秒，`check_month` 不变，唯一键不变。测试 `monthKeyStaysStableWithinAMonthAndRoutesHistoryAcrossMonthBoundaries` 断言 10 月 1 日和 10 月 31 日都是 `2026-10-01`。
+
+跨月修正会得到另一个 `check_month`。唯一键不同。`fromResponse` 和 `FuiouGroupBuyVerificationSyncService` 190 行只对当前行做 stream load `upsert`，没有删除旧月份的行。所以时间从 9 月改到 10 月时，代码会产生 10 月这一行，不会在这段代码里删掉 9 月那一行。是否因此多出一条核销，代码已确认存在这个键变化；生产是否已出现，未抽样。
+
+没有 `meta_sink_sequence`。写入是 `streamLoad.load(..., "upsert")`。同一键的后一次成功录入提交整行新值。表是 merge-on-write，但没有序号列来拒绝旧批次。两次同步的先后只由任务执行顺序决定。本轮没有用生产样本证明后写一定覆盖前写。
+
+部分核销：`checkPayNum`、`checkPayTimes` 按整数保存，可以为 0。代码不把它们解释成部分核销规则。
+
+与订单营业额：计算器不读这些行。等级：代码已确认相互独立。

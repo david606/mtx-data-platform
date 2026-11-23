@@ -1,0 +1,33 @@
+# 06-02-R-06 四平台支付完整性与状态专项核验
+
+本轮只读代码、仓库内接口摘录和已完成的 06-02、06-DB-01-06。没有改代码，没有查生产业务行，没有把设计文档或代码注释写成官方字段定义。
+
+## 富智云
+
+`FuiouSourceEnums.SourcePaymentStatus` 92–95 行只有三个值：`1` 支付成功，`2` 退款成功，其他 `UNKNOWN`。
+
+`FuiouPaymentFactMapper.map` 28–35 行三种都会生成支付事实：成功、已退款、未知。没有单独的失败枚举。未知不会被丢掉。
+
+金额 `payAmt`，手续费 `feeAmt`，都是整数读取。一行对应一个 `paySsn`，行键固定 `PRIMARY`。报文里的 `payAmtExtra` 没有在这个 Mapper 拆成第二行。组合支付是否本来就是多条 `paySsn`，待报文。
+
+充值赠送进入优惠行 `STORED_VALUE_GIFT` 和充值事实 `giveAmt`，不在这条支付事实里拆本金和赠送。
+
+## 美团
+
+`MeituanPaymentFactMapper.map` 24–37 行：不是 `payType=2` 的正式确认回调，或者金额、创建时间缺失，返回空列表。未支付不会写支付事实。支付失败没有单独状态写入。写出的行固定 `SUCCESS`，金额是 `total` 元转分，无手续费字段。
+
+## 淘宝
+
+`TaobaoPaymentFactMapper.map` 15–19 行：没有 `onlinePaid=true`，或金额、创建时间不合法，返回空列表。未支付和失败不写支付事实。写出的行固定 `SUCCESS`，金额是 `totalPrice`。无手续费。
+
+## 京东
+
+没有 `JdPaymentFactMapper`。原收款在 `JdOrderReceiptMapper.map`：`paymentId=ORDER_PAY:<订单号>`，状态成功，金额 `orderBuyerPayableMoney.longValue()`，32 行。类注释写明较晚查询不能替换原金额，手续费、券面额、本金赠金保持空。
+
+退款判型只认这一条原收款。订单头 `userPayAmount` 仍由订单 Mapper 另写。两处都读 `orderBuyerPayableMoney`，但一个用 `longValue()`，一个用 `cents`。没有看到把订单实付和支付事实做差额校验的代码。
+
+## 一致性
+
+未发现“订单 `userPayAmount` 必须等于支付事实 `paidAmount`”的统一校验。京东只在退款判型时比较退款额和原收款。美团、淘宝的支付事实金额来自同一字段，但是否每次订单更新都重写支付事实，由调用条件决定，不是每条订单事件都写支付。
+
+手续费来源只在富智云 `feeAmt` 上看到。等级：代码已确认。

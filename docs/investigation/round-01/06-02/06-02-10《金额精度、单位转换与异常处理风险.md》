@@ -1,0 +1,24 @@
+# 06-02-10 金额精度、单位转换与异常处理风险
+
+证据等级：代码已确认、生产结构已确认、自动化测试已验证、真实报文已验证、生产样本已验证、代码推断、待业务确认、未发现。本轮没有导出生产订单样本，因此没有“生产样本已验证”的金额口径。
+
+| 风险 | 证据 | 等级 |
+| --- | --- | --- |
+| 美团、淘宝用 `HALF_UP` 把元变成整数分，0.005 元会进位到 1 分 | `JsonMapperSupport.yuanToCent` 51–54 行 | 代码已确认 |
+| 富智云、京东订单金额遇到小数直接变成 `null`，不是截断 | `longValue` 的 `longValueExact` | 代码已确认 |
+| 京东售后 `cashMoney`、`refundUserMmoney` 使用 `JsonNode.longValue()`，小数会被截断而不是拒绝 | `JdAfsRefundMapper` 115、145 行 | 代码已确认 |
+| 淘宝优惠和订单总优惠取绝对值，负的优惠额会变成正数 | `TaobaoOrderFactMapper` 127 行，`TaobaoOrderDiscountFactMapper` 66–70 行 | 代码已确认。业务上是否允许负优惠，待业务确认 |
+| 美团商家或平台承担为负时被收成 0 | `MeituanOrderDiscountFactMapper.nonNegative` | 代码已确认 |
+| 富智云退款金额、数量为负直接抛错 | `FuiouRefundContributions.accept` 274 行 | 代码已确认 |
+| 充值金额取绝对值；赠送金额不取绝对值 | `FuiouRechargeFactMapper` 57–58 行 | 代码已确认 |
+| 营业额和退款累计使用 `addExact`/`subtractExact`，溢出变 `null` 或失败，不回绕 | 计算器与退款贡献类 | 代码已确认 |
+| 富智云 `long` 溢出或小数字段变成 `null` 后，订单更新的 `COALESCE` 会留下旧金额 | Writer 5359–5366 行 | 代码已确认。可能掩盖坏报文，待业务确认是否可接受 |
+| 营业额补丁允许把列更新成 `null` | 5336 行没有 `COALESCE` | 代码已确认 |
+| 商品行首次插入把未知退款成功额和数量写成 0 | `ITEM_SQL_TEMPLATE` 234 行 `COALESCE(..., 0)`。累计补丁 4134、4164 行只在金额非空时覆盖 | 代码已确认 |
+| 团购金额不做舍入，超精度直接失败 | `FuiouGroupBuyVerificationRows` 59 行 | 代码已确认 |
+| 未发现金额计算用 `double` 或 `new BigDecimal(double)` | 本轮读过的 Mapper 和计算器 | 未发现于已读路径。不能写成全仓库不存在 |
+| 除法：营业额和退款累计没有除法。未发现金额分摊除法 | 已读计算路径 | 未发现比例分摊。富智云注释明确禁止比例分摊赠送 |
+
+空字符串：`text()` 把空白当成缺失，随后金额为 `null`，不是 0。代码已确认。
+
+重复累计：富智云退款按退款号合并后再求和，同一号不会因重复事件加两次，但同版本冲突会暂停采用。其他平台依赖唯一键和 sequence，Mapper 本身不累加历史退款。等级：代码已确认各自机制，没有统一的“全部平台都累加”规则。

@@ -1,0 +1,51 @@
+# 06-02-11 跨平台金额口径对比与调查结论
+
+证据等级：代码已确认、生产结构已确认、自动化测试已验证、真实报文已验证、生产样本已验证、代码推断、待业务确认、未发现。本轮没有导出生产订单样本，因此没有“生产样本已验证”的金额口径。
+
+单元格只写代码已经赋值的字段。没有写到的格子用“未发现”或“待确认”，不补公式。
+
+| 金额口径 | 富智云 | 京东 | 美团 | 淘宝闪购 | 统一字段 | Doris 字段 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 商品原价 | 商品行汇总，待对照行字段 | 注释说不能用 `orderTotalMoney`；原价由商品行完整时另汇总 | `wmAppOrderFoods` 汇总 | 快照 `originalPrice`，元转分 | `goodsOriginalAmount` | `goods_original_amount` |
+| 订单原始金额 | 未映射，固定 null | 未发现订单 Mapper 赋值 | `originalPrice` | 快照 `totalAmount` | `orderOriginalAmount` | `order_original_amount` |
+| 商品成交金额 | 商品 Mapper 的 `userPayAmount` | 商品实付 `paidAmount` 写入行 | 商品 Mapper 有 `userPayAmount` | 商品 Mapper 有 `userPayAmount` | `userPayAmount` | 明细 `user_pay_amount` |
+| 优惠总金额 | `fullOrderDisAmt`，禁止再加优惠行 | `orderDiscountMoney`，不含单品和运费优惠 | 活动汇总 | `totalActivityAmount` 的绝对值 | `totalDiscountAmount` | `total_discount_amount` |
+| 商家承担优惠 | 仅 `ROUNDING` 行等于优惠额，其余 null | 拆分结果 merchant，稳定性待确认 | `poiCharge` | `restaurantPart` 绝对值 | `merchantBearAmount` | `merchant_bear_amount` |
+| 平台承担优惠 | 仅红包行 | 拆分结果 platform | `mtCharge` | `elemePart` 绝对值 | `platformBearAmount` | `platform_bear_amount` |
+| 用户实付 | `payAmt` | `orderBuyerPayableMoney` | `total` | 快照 `totalPrice` | `userPayAmount` | `user_pay_amount` |
+| 营业额 | 基数减配送费再加套餐调整 | 实付加订单级优惠 | 基数减配送费 | 基数减配送费 | `turnoverAmount` | `turnover_amount` |
+| 支付成功金额 | 支付事实 `payAmt` | 未发现独立支付事实 | 支付 Mapper 的金额 | 支付 Mapper 的金额 | `paidAmount` | `paid_amount` |
+| 支付手续费 | `feeAmt` | 未发现 | 未发现 | 未发现 | `paymentFeeAmount` | `payment_fee_amount` |
+| 退款金额 | `refundAmt`，按退款号累加 | 成功单 `refundUserMmoney` | `money` 元转分 | 头 `totalPrice`，行 `money` | `refundAmount` | `refund_amount` |
+| 商家承担退款 | 未写入，null | 未发现 | 未发现 | 未发现 | `merchantBearAmount` | `merchant_bear_amount` |
+| 充值本金 | `payAmt` 或冲正 `refundAmt`，取绝对值 | 未发现 | 未发现 | 未发现 | `rechargeAmount` | `recharge_amount` |
+| 充值赠送 | `giveAmt` | 未发现 | 未发现 | 未发现 | `giftAmount` | `gift_amount` |
+| 团购购买价 | 核销字段 `buyPriceAmt` 原样小数 | 未发现 | 未发现 | 未发现 | 无统一订单字段 | `buy_price_amt` |
+| 团购核销金额 | 八个 DECIMAL 字段均原样保存，无互算 | 未发现 | 未发现 | 未发现 | 无 | 见 06-02-08 |
+
+## 已有代码证据链
+
+营业额四平台公式、富智云支付和充值字段、四平台退款金额来源、淘宝和美团的承担字段、团购八字段的原样写入、Doris 订单金额的 `COALESCE` 与营业额可清空，都能从当前代码指到文件和行号。
+
+## 仍待确认
+
+1. 富智云、京东整数字段在原始接口里是不是分。
+2. 京东 `orderGoodsMoney` 的官方定义。京东注释自己写了未登记。
+3. 美团 `total`、淘宝 `totalPrice` 是否就是用户实付，而不是优惠后商品额。
+4. 五项优惠是否应该平衡。代码没有这个等式。
+5. 退款能否超过实付，退款后营业额要不要下降。代码不下降。
+6. 团购 DECIMAL 的业务单位，以及是否应进入订单营业额。
+7. 生产行是否与这些规则一致。本轮没有样本。
+
+## 测试
+
+本轮只读测试方法名，没有执行测试。
+
+| 规则 | 是否有自动化测试 | 测试类 | 已看到的场景 | 边界 | 结论 |
+| --- | --- | --- | --- | --- | --- |
+| 营业额公式 | 有 | `OrderTurnoverCalculatorTest` | 富智云套餐调整保留正负号；美团淘宝不要求优惠快照；京东只用实付和订单级优惠；缺失、非法、溢出保持未知，真实 0 仍是 0 | 有溢出和缺失用例。没有生产报文 | 自动化测试已存在，生产样本未验证 |
+| 富智云多次退款 | 有 | `FuiouRefundContributionsTest` | 不同到达顺序累加；同版本金额冲突；负数和溢出失败；数量先到不能当成金额已齐 | 有乱序和冲突。不覆盖其他平台 | 同上 |
+| 富智云顺序号 | 有 | `FuiouFinancialSequenceTest` | 修复号高于普通尾数；负版本、截断和溢出不能生成修复号 | 只测顺序号，不测金额 | 同上 |
+| Doris 写入 | 有测试类 | `DorisCanonicalFactWriterTest` | 本轮没有逐条读断言 | 未核对是否覆盖 null 变 0 | 测试类存在，覆盖范围未读完 |
+| 京东、美团、淘宝部分退款和多次退款累计 | 未在本轮读到对等的累计测试 | 各平台 Mapper 测试可能只测单条映射 | 未读完全部断言 | 未确认 | 待补读测试，不能报成已覆盖 |
+| 团购八个 DECIMAL 的舍入 | 未发现专门边界测试 | 未发现 | 未读到 scale 超限用例 | 未确认 | 未发现于本轮检索 |

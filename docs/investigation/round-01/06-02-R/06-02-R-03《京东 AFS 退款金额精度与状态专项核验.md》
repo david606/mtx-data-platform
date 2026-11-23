@@ -1,0 +1,42 @@
+# 06-02-R-03 京东 AFS 退款金额精度与状态专项核验
+
+本轮只读代码、仓库内接口摘录和已完成的 06-02、06-DB-01-06。没有改代码，没有查生产业务行，没有把设计文档或代码注释写成官方字段定义。
+
+`docs/references/jd` 只有订单查询和金额拆分摘录，没有售后字段 `refundUserMmoney`、`cashMoney`、`skuCount`、`afsServiceState`。这些字段的单位和是否允许小数，不能从仓库接口摘录确认。
+
+## 代码怎么读
+
+`JdAfsRefundMapper`：
+
+- 成功状态才写根金额：`detail.path("refundUserMmoney").longValue()`，115 行。非成功写 `null`。
+- 成功明细写 `item.path("cashMoney").longValue()`，145 行。
+- 数量是 `skuCount` 的 `longValue()`，再放进 `BigDecimal`，144 行。
+- 这里没有调用 `JdMapperSupport.cents`。`cents` 走 `JsonMapperSupport.longValue`，小数会因 `longValueExact` 失败而变成空。`JsonNode.longValue()` 对小数是截断。
+
+因此小数被截断在这条路径上是可能的。是否真有小数字段，待真实报文。订单详情金额走 `cents`，和售后这条路径不一样。
+
+原收款 `JdOrderReceiptMapper` 32 行也对 `orderBuyerPayableMoney` 使用 `longValue()`。那是支付事实，不是 AFS，但同样没有拒绝小数。
+
+## 状态枚举
+
+`status` 238–245 行：
+
+| 源码 | 统一状态 |
+| --- | --- |
+| 32、114 | SUCCESS |
+| 33、40、60、113 | REJECTED |
+| 50 | CLOSED |
+| 10、12、20、30、31、110、111、1101、1111、1112、112 | PROCESSING |
+| 其他 | 抛“京东售后金融映射来源无效” |
+
+代码没有单独的“申请”和“失败”枚举名。处理中覆盖多组源码，拒绝和关闭分开。源码的业务名称不在这段 switch 里，待接口文档。
+
+## 和实付的关系
+
+`refundType` 53–57 行：原收款为空、小于等于 0，或退款额为空、小于等于 0 时，类型保持 `UNKNOWN`。退款额大于原收款会抛错。相等为全额，更小为部分。
+
+原收款只认 `paymentId=ORDER_PAY:<订单号>`、行键 `PRIMARY`、状态成功，且 `jdRefundCashOnly` 为真。35–48 行。没有这条原收款时不做上限比较，类型保持未知，不会在这里抛“超过实付”。
+
+非成功实例不生成商品退款行。成功金额和商品集合一旦采用，更晚的未知或失败不能撤销，`CanonicalOrderReducer` 1652–1666 行。
+
+未发现针对 `longValue()` 截断小数的测试。等级：截断风险代码已确认；字段单位和真实是否出现小数，待确认。

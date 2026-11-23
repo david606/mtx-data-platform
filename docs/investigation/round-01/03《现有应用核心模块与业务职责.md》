@@ -1,0 +1,319 @@
+# 03 现有应用核心模块与业务职责
+
+## 1. 应用在解决什么问题
+
+已确认：把多个餐饮订单来源的原始回调和主动查询结果保存下来，转换成统一的订单、商品、优惠、支付、退款事实，放到 Doris，再按查询模板提供只读查询。同时把一部分原始回调转发给内部 SSM。
+
+来源编码以 `SourceSystem` 为准：
+
+| 编码 | 枚举 | 中文 | 在代码中的含义 |
+| --- | --- | --- | --- |
+| 0 | `UNKNOWN` | 未知 | 非法或缺失时的兜底 |
+| 1 | `FUIOU` | 富智云 | 订单回调、支付回调、门店、商品、会员、团购核销 |
+| 2 | `TAOBAO` | 淘宝闪购 | 回调和补拉。依赖饿了么 OpenAPI SDK |
+| 3 | `MEITUAN` | 美团外卖 | 回调和订单/退款补拉 |
+| 4 | `JD` | 京东秒送 | 枚举中文是京东秒送。`PlatformCode.JD` 的中文是「京东外卖」。两个名字同时存在 |
+
+`PlatformCode` 还有 `FZY`（富智云）、`TAOBAO`、`MEITUAN`、`JD`。它和 `SourceSystem` 是两套编码，不要混用数字和字符串。
+
+### 1.1 和调查提纲里的四个来源怎么对应
+
+| 提纲中的说法 | 代码里实际看到的 | 等级 |
+| --- | --- | --- |
+| POS 订单 | 没有名为 POS 的接入类。富智云渠道码 `01` 映射为「收银台」，业务场景可以是堂食。 | 推断：收银台订单可能就是业务口中的 POS。需要业务确认 |
+| 京东外卖订单 | 有完整回调、Token、订单查询、售后查询和事实映射。 | 已确认有京东外卖/秒送链路 |
+| 其他外卖订单 | 美团外卖是独立来源。抖音没有独立回调 Controller；富智云渠道码 `09` 映射为「抖音外卖渠道」。 | 美团已确认。抖音只确认「作为富智云渠道值出现」 |
+| 淘宝团购订单 | 淘宝接入的中文是「淘宝闪购」，不是团购。团购核销来自富智云查询接口，写入 `dwd_trade_group_buy_verification_fact_v1`。渠道小类里有美团和抖音。 | 已确认存在团购核销事实。未发现名为「淘宝团购订单」的独立接入 |
+
+## 2. 数据接入链路
+
+### 2.1 富智云订单：`POST /order/store-push`
+
+类：`OrderController.storePush`。
+
+已确认的顺序：
+
+1. 用原始 body 做请求跟踪，`IngestRequestTrace.fromPayload`。
+2. `FuiouSignUtils.parseSign` 和 `verifySign`。密钥来自 `FuiouAccountConfigResolver.requireByPayload(payload).callback().secret()`。验签失败返回业务失败，并写失败审计。
+3. `StorageWriteService.putIfAbsent`。来源是 `SourceSystem.FUIOU`，内容类型是 `ContentType.ORDER`。
+4. `FuiouOrderPayloadParser.parse` 取出事件键、消息版本、来源对象号。
+5. `OrderEventService.createEvent`。唯一键是 `(sourceSystem, thirdEventKey, messageVersion)`，重复插入捕获 `DuplicateKeyException`。见 `OrderEventServiceImpl` 类注释。
+6. 新事件通过 `AnalysisEventDeliveryService.dispatchImmediately` 通知分析侧。通知失败只记日志，注释写明持久 Outbox 仍在。
+7. 返回 `FuiouResponse`。成功是 `FuiouResponse.ok()`。
+
+原始报文没有先绑定成一个公开的订单 DTO。字段解析在 parser 内。本轮没有逐字段列出富智云报文。
+
+异常：验签失败、存储失败、业务校验失败、未知异常都会走 `EventIngestFailureLogService.recordFailure`。存储失败对调用方返回创建失败，不是假装成功。
+
+### 2.2 富智云支付：`POST /payment/store-push`
+
+类：`PaymentController.storePush`。结构和订单入口平行。
+
+差异已确认：
+
+- 解析器是 `FuiouPaymentPayloadParser`。
+- 内容类型是 `ContentType.PAYMENT`。
+- 事件表是支付事件。`PaymentEventServiceImpl` 注释写明幂等键是 `(sourceSystem, thirdEventKey)`，富智云的 `thirdEventKey` 即 `paySsn`。订单事件则还包含 `messageVersion`。这是两套幂等粒度，不能当成同一规则。
+
+### 2.3 富智云会员：`POST /fzy/member_sync`
+
+类：`FzyController.acceptMember`。
+
+类注释写明：只接收原始 JSON，打 INFO 日志，立刻返回成功。不验签，不写 Storage，不创建来源事件，不进入分析。这是已确认的缺口，不是推断。
+
+会员数据的另一条路是 Analytics 定时调用 Ingress 查询富智云门店会员，并有 Flink `trade-member-cdc`。那条路和这个空回调不是一回事。
+
+### 2.4 京东：`POST /jd/djsw/{messageType}`
+
+类：`JdController.gateway`。它不自己写存储，而是调用 `ThirdpartyCallbackIngressTemplate.ingest`。
+
+模板类注释写明固定顺序：验签、Storage、字段解析、来源事件、可靠任务、审计与指标。已读到的实现是：
+
+1. `adapter.verify`。失败抛 `ThirdpartySignatureException`，返回验签失败响应。
+2. `storageWriteService.putIfAbsent`。京东还会核对返回的 SHA-256 必须等于本次原始 body。
+3. `adapter.parseEvent`。
+4. `thirdpartyEventService.createJdEvent`。京东售后在特定冲突时会再读已存原文比较一次，只重试一次。
+5. 需要分析的事件调用 `analysisEventDeliveryService.dispatchImmediately`。即时通知失败不影响已经落库的 Outbox。
+6. 若适配器要求立即转发，再尝试投递。京东同键冲突时，本次 body 不一定是赢家原文，这种请求不立即发送，改由持久任务按 `storageId + payloadSha256` 读赢家原文。
+
+Token：`POST /jd/acceptToken` 交给 `JdAuthorizationTokenService.accept`。校验探测可以不落库。正式 Token 会插入，表是 `trade_jd_authorization_token`。
+
+主动补拉不是京东服务器推过来的，而是 Analytics 的 `JdPickupTask` 调用 Ingress 的 `/internal/jd/pickup/order-query` 等接口，再把查询结果写成 `trade_source_query_event`。
+
+### 2.5 美团：`GET/POST /mt/{eventType}`
+
+类：`MeituanController`。
+
+已确认：
+
+- 路径变量必须能在 `MeituanCallbackEventType` 找到，否则 HTTP 404。
+- GET 只记日志并返回成功，不进验签和存储。
+- POST body 为空时也只返回成功。注释说明这是平台连通性探测。
+- 非空 POST 进入同一个 `ThirdpartyCallbackIngressTemplate`。
+
+白名单里和订单、退款直接相关的值包括：
+
+- `acceptedOrder`、`confirmedOrder`、`completedOrder`、`settledOrder`、`canceledOrder`
+- `fullyRefundedOrder`、`partiallyRefundedOrder`
+- `orderInfoChanged`
+- 以及配送、门店变更等
+
+白名单存在，不等于每个事件类型都已经映射成 Doris 事实。哪些类型只转发 SSM、哪些进入分析，要看 `MeituanCallbackAdapter.analysisDecision`。本轮没有逐个事件类型读完这个方法，标为待确认。
+
+订单详情不全时，Analytics 还有 `MeituanOrderPickupTask` 和 `MeituanRefundPickupTask`，通过 Ingress 内部接口补拉。
+
+### 2.6 淘宝闪购：`GET/POST /tb/acceptOrder`
+
+类：`TaobaoController`。
+
+已确认：
+
+- GET 只返回成功。
+- POST 若 `TaobaoCallbackAdapter.isEventTypeSupported` 为假，直接返回成功，不验签、不存储。注释说白名单在 `TaobaoEventType`。
+- 支持的类型进入统一模板。
+
+补拉接口在 `TaobaoPickupController`：订单详情、退款商品查询、把已捕获原文事件化、查询补拉状态。
+
+SDK 是饿了么 OpenAPI。所以代码中的「淘宝」指淘宝闪购/饿了么这一路，不是淘宝交易平台的实物订单，也不是本轮提纲里的「淘宝团购订单」。等级：已确认命名和 SDK；和业务人口中的「淘宝团购」是否同一业务，待确认。
+
+### 2.7 团购核销，不是回调
+
+类：`FuiouGroupBuyVerificationSyncService`。
+
+已确认行为：
+
+- 按有效品牌和富智云账号，调用 Ingress `POST /internal/fuiou/group-buy-verifications/query`。
+- 按天分页。定时任务回看最近 4 小时，另有每天补扫昨天。
+- 用 Doris Stream Load 写入 `dwd_trade_group_buy_verification_fact_v1`。
+- 类注释写明不登记持久任务，失败范围由人工重跑。重复券靠 Doris 唯一键覆盖。
+- 查询最多尝试 3 次（`QUERY_MAX_ATTEMPTS`）。
+
+手工入口是 Analytics `POST /internal/fuiou/group-buy-verification-sync/run`。
+
+## 3. 接入之后的处理职责
+
+处理不在 Controller 里完成。Controller 只负责接住、验真、留下来源事件。
+
+### 3.1 分析主链
+
+`AnalysisPubSubConsumer.receive`：
+
+- 实时开关关闭则直接返回。
+- 旧外卖合同消息丢弃，不进业务处理。
+- 未知 schema 告警并停住。
+- 同一 `outboxId` 用 Redis 锁避免多个实例同时处理。
+- 工作队列满时不 ACK，等 Outbox 再投。
+
+`AnalysisEventProcessingService` 类注释：MySQL 账本驱动处理、重试、隔离和 Ingress ACK。账本表是 `trade_analysis_event_process`。终态后的 ACK 失败不能倒退业务结果。
+
+它依赖：
+
+- `StorageReader`：用 `storageId + payloadSha256` 读原文。
+- `TradeSourceAdapterRegistry`：富智云、京东、美团、淘宝闪购各一个适配器。重复注册会启动失败。
+- `CanonicalWriteCoordinator`：订单级归并。
+- `CanonicalFactWriter` 的实现 `DorisCanonicalFactWriter`。
+
+来源映射类是实存的，不是猜测：
+
+| 来源 | 已存在的映射类 |
+| --- | --- |
+| 富智云 | `FuiouOrderFactMapper`、`FuiouOrderItemFactMapper`、`FuiouOrderDiscountFactMapper`、`FuiouPaymentFactMapper`、`FuiouRefundFactMapper`、`FuiouRefundItemFactMapper`、`FuiouRechargeFactMapper` |
+| 京东 | `JdOrderFactMapper`、`JdOrderItemFactMapper`、`JdOrderDiscountFactMapper`、`JdAfsRefundMapper`、`JdOrderReceiptMapper` |
+| 美团 | `MeituanOrderFactMapper`、`MeituanOrderItemFactMapper`、`MeituanOrderDiscountFactMapper`、`MeituanPaymentFactMapper`、`MeituanRefundFactMapper`、`MeituanRefundItemFactMapper` |
+| 淘宝闪购 | `TaobaoOrderFactMapper`、`TaobaoOrderItemFactMapper`、`TaobaoOrderDiscountFactMapper`、`TaobaoPaymentFactMapper`、`TaobaoRefundFactMapper` |
+
+本轮没有逐个打开这些类核对每一个金额字段。所以「存在订单、明细、优惠、支付、退款映射」是已确认；「每个平台的金额公式已经完整且一致」是待确认。
+
+### 3.2 统一状态和金额
+
+`CdmEnums` 里已经定义、并写明对应事实列的概念：
+
+- 业务场景 `business_scene`：堂食、外卖配送、到店自取、未识别。
+- 订单类型：普通、预订。
+- 渠道大类：团购、堂食、堂食与团购组合、外卖。
+- 渠道小类：美团、抖音、收银台、小程序、淘宝闪购、京东、其他。
+- 交付方式：堂食、自取、平台配送、商家配送。
+- 订单状态：已创建、已支付、已接单、已完成、已取消、已失效、已关闭。注释写明完成不代表之后不会退款。
+- 支付状态：无、未付、部分付、已付、部分退、全退。
+- 币种只看到 `CNY`。
+
+富智云渠道码到标准渠道的映射在 `FuiouSourceEnums.SourceChannelType`：`01` 收银台/堂食，`09` 抖音外卖，`00`、`05`、`12`、`13` 小程序/堂食，其他未知但仍落入堂食大类。未知渠道被归成堂食，是代码事实，业务上是否可接受需要人工确认。
+
+金额归并有专门类 `OrderTurnoverCalculator`、`FuiouRefundContributions`、`FuiouFinancialSequence`。本轮只确认它们存在并被订单归并引用，没有复核公式。
+
+### 3.3 商品、门店、会员
+
+这些不是订单回调的副产品，而是单独同步：
+
+- 富智云门店、商品定时同步。
+- 京东、美团、淘宝闪购门店或商品同步。
+- SSM 商品映射同步 `SsmGoodsMappingSyncTask`。
+- 门店会员 `FuiouStoreMemberSyncTask`，Doris 表 `dwd_store_member_info_fact`，另有 `dwd_member_info_fact_v1`。
+- 品牌维表 `dim_brand`、`dim_brand_thirdparty`。
+
+订单事实要关联门店和商品时，缺映射会进入等待或补偿。已看到异常类型 `ShopIdentityPendingException`、`FuiouOrderBrandMissingException`、`FactDependencyMissingException`、`trade_mapping_compensation` 表。具体等待多久、超时后算不算死信，本轮只看到处理服务里有准备等待上限 2 小时的常量，没有把所有分支读完。等级：已确认有等待和补偿机制；完整超时矩阵待确认。
+
+### 3.4 清洗
+
+`preparation.preprocess` 有 `JsonStringCleaner`、`InvalidUnicodeStringCleaner`。等级：已确认有报文字符串清洗。清洗规则的完整清单待下一轮按类阅读。
+
+## 4. 数据库里实际有哪些业务表
+
+### 4.1 MySQL `trade_flow`（`trade-flow-init.sql`）
+
+| 表 | 作用 | 主键和关键唯一键 |
+| --- | --- | --- |
+| `trade_storage` 及 `_00` 到 `_99` | 原文元数据。元数据脚本注释要求永久保留 | PK `id`。唯一 `(source_system, payload_sha256)` |
+| `trade_storage_blob` 及 `_00` 到 `_99` | 热原文，`MEDIUMBLOB` | PK `id`，与元数据 id 相等 |
+| `trade_storage_archive_control` | 归档任务租约 | PK `task_name` |
+| `trade_data_retention_control` | 保留任务租约 | PK `task_name` |
+| `trade_order_event` | 富智云订单来源事件 | PK 自增。唯一 `raw_id`。唯一 `(source_system, third_event_key, message_version)` |
+| `trade_payment_event` | 富智云支付来源事件 | 唯一 `raw_id`。唯一 `(source_system, third_event_key)`，没有 message_version |
+| `trade_thirdparty_event` | 淘宝闪购、美团、京东回调事件 | 唯一 `(raw_id, raw_event_type)`。唯一 `(source_system, third_event_key, message_version)` |
+| `trade_source_query_event` | 主动查询结果事件，正文仍在 Storage | 多个按查询类型区分的唯一键 |
+| `trade_jd_authorization_token` | 京东 Token | 本轮未逐列抄完索引 |
+| `trade_thirdparty_config` | 第三方配置 | 本轮未逐列抄完 |
+| `trade_analysis_event_outbox` | 发给 Analytics 的可靠通知 | 本轮未逐列抄完 |
+| `trade_event_delivery_task` | 转发给 SSM 等下游的任务 | 本轮未逐列抄完 |
+| `trade_event_delivery_attempt_log` | 转发尝试审计 | 本轮未逐列抄完 |
+| `trade_event_ingest_failure_log` | 接入失败审计 | 本轮未逐列抄完 |
+| `mtx_id_pool_contract`、`mtx_id_worker` | 发号器 | 已看到建表 |
+
+关联方式：事件表用 `raw_id + payload_sha256` 指向 Storage，不是数据库外键。init SQL 里没有看到 `FOREIGN KEY`。等级：已确认脚本中的关联是字段约定；数据库是否另有线上外键，待确认。
+
+### 4.2 MySQL `trade_analytics`
+
+运行与控制：
+
+- `trade_analysis_event_process`：处理账本
+- `trade_analysis_event_attempt_log`：尝试日志
+- `trade_analysis_orphan_event_failure`
+- `trade_analysis_stream_dead_letter`：死信
+- `trade_analysis_order_state`、`trade_analysis_order_replay_context`
+- `trade_analysis_flush_task_index`、`trade_analysis_flush_task_payload`
+- `trade_analysis_fact_write_task_index`、`trade_analysis_fact_write_task_payload`
+- `trade_analysis_pickup_task`
+- `trade_analysis_backfill_task`、`trade_analysis_backfill_shard`、`trade_analysis_backfill_event_failure`
+- `trade_analysis_recovery_admission_control`
+- `trade_mapping_compensation`
+- `trade_analysis_order_fact_index`、`trade_analysis_order_fact_index_anchor`
+- `trade_ssm_group_sync_checkpoint`、`thirdparty_sync_watermark`
+- `trade_data_retention_control`
+
+主数据：
+
+- `dim_brand`、`dim_brand_thirdparty`
+- `dim_jd_account_anchor`、`dim_jd_account_binding`
+- `dim_trade_shop_id_mapping`、`dim_fuiou_shop_info`、`dim_taobao_shop_info`、`dim_meituan_shop_info`、`dim_jd_shop_info`、`dim_trade_shop_group`
+- `dim_goods_product_v1`、`dim_goods_product_source_v1`、`dim_goods_category_v1`、`dim_goods_platform_catalog_v1`、`dim_goods_product_package_rel_v1`、`dim_trade_goods_group`
+
+查询与质检：
+
+- `trade_analysis_query_template_group`、`trade_analysis_query_template`、`trade_analysis_query_template_stash`
+- `trade_analysis_quality_rule`、`trade_analysis_quality_candidate`、`trade_analysis_quality_run`、`trade_analysis_quality_issue`
+
+会员：`dwd_store_member_info_fact` 也在这份 MySQL 脚本里。Doris init 里有同名表。两边是否都写，待确认。
+
+### 4.3 Doris `trade_warehouse`
+
+当前事实表（v1）：
+
+- `dwd_trade_order_fact_v1`
+- `dwd_trade_order_item_fact_v1`
+- `dwd_trade_order_discount_fact_v1`
+- `dwd_trade_group_buy_verification_fact_v1`
+- `dwd_trade_payment_fact_v1`
+- `dwd_trade_recharge_fact_v1`
+- `dwd_trade_refund_fact_v1`
+- `dwd_trade_refund_item_fact_v1`
+- `dwd_trade_complaint_fact_v1`
+- `dwd_trade_settlement_entry_fact_v1`
+
+版本表（CDC 注释说六张，init 里能对上订单、明细、规格、套餐、支付、支付账户）：
+
+- `dwd_order_version`
+- `dwd_order_item_version`
+- `dwd_order_item_spec_version`
+- `dwd_order_package_item_version`
+- `dwd_payment_version`
+- `dwd_payment_account_version`
+
+维表包括门店映射、富智云/淘宝/美团/京东门店、商品、区域、`dim_unified_shop_wide`。会员事实有 `dwd_member_info_fact_v1`、`dwd_store_member_info_fact`。
+
+投诉和结算分录有 Doris 表。本轮没有找到与订单回调同级的「投诉接入 Controller」。等级：表存在已确认；谁写入投诉和结算分录，待确认。
+
+## 5. 数据输出
+
+| 输出 | 证据 | 等级 |
+| --- | --- | --- |
+| Doris 统一事实，供查询模板读取 | `DorisCanonicalFactWriter` 写入订单、明细、优惠、支付、退款、退款明细；`QueryExecuteController` 执行已发布模板 | 已确认 |
+| Doris 团购核销明细 | `FuiouGroupBuyVerificationSyncService` | 已确认 |
+| Doris 版本表 | `TradeCdcJob` 注释和源表 `trade_order_event`、`trade_payment_event` | 已确认代码存在。是否仍是线上主路径，待确认 |
+| SSM 原始回调 | `SsmCallbackBridge.forward` 只调 V2。非 200、空响应、HTTP 异常都当失败 | 已确认 |
+| 管理查询 | 门店、商品、处理账本、回灌状态、质检问题都有内部 API | 已确认有接口。哪些被前端使用，待确认 |
+| 汇总表 | 没有看到名为「日报汇总表」的独立聚合任务。查询模板可以在 Doris 上做聚合。 | 未发现独立的日结汇总作业。不能说业务上没有报表 |
+
+## 6. 已经实现、值得以后保留的业务能力
+
+这些是代码里已经有行为，不是建议照搬类结构。
+
+1. 原始报文先按 SHA-256 留下，再解析。解析失败仍然能用 `storageId + payloadSha256` 找到原文。
+2. 幂等键包含来源、业务事件键、消息版本。支付事件是例外，唯一键不含版本。这个差异本身要保留并写清楚。
+3. 重复回调返回成功或按已存在事件处理，而不是再插一行。依据是唯一键和 `DuplicateKeyException`。
+4. 即时通知失败不丢任务，Outbox 和拉取任务还在。
+5. 来源适配器和统一订单模型分开。新增平台不应直接写 Doris 列。
+6. 订单完成和退款是不同状态，完成之后仍允许退款。`OrderStatus.COMPLETED` 的枚举说明就是这句话。
+7. 堂食、外卖、团购、组合支付被分成渠道大类，而不是只用一个「订单类型」字段硬塞。
+8. 外卖详情不全时有补拉，而不是在回调线程里无限调用第三方。
+9. 失败有审计表、尝试日志、死信和人工回灌入口。
+10. 查询走发布过的模板和内部签名，不是把任意 SQL 暴露出去。`QueryExecuteController` 使用 `@InternalApiSignature`。
+
+## 7. 本轮已确认的缺口
+
+1. `FzyController` 的会员回调不落库。
+2. 没有独立的抖音回调入口。抖音只出现在富智云渠道码和团购渠道描述里。
+3. 没有名为 POS 的模块。POS 若等于富智云收银台，需要业务确认。
+4. 没有名为「淘宝团购订单」的接入。团购是富智云核销明细。
+5. 团购同步失败不进持久任务，注释要求人工重跑。
+6. 投诉、结算分录有事实表，写入入口本轮未定位到与订单同级的回调。
+7. `trade-cdc` 与 Analytics 事实写入是两条 Doris 路径，版本表和 `*_fact_v1` 并存。哪条给报表使用，待确认。

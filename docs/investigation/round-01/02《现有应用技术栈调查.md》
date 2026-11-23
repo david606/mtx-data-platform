@@ -1,0 +1,110 @@
+# 02 现有应用技术栈调查
+
+版本只写有配置或 BOM 证据的数字。没有在模块 POM 里写死、又没有查到 BOM 的，标成待确认。
+
+## 1. 总表
+
+| 技术 | 版本或事实 | 证据 | 等级 |
+| --- | --- | --- | --- |
+| JDK | 17 | 各服务模块 `java.version` 为 17。Flink 模块 `maven.compiler.release` 或 source/target 为 17。`trade-member-cdc` 的 enforcer 要求 `[17,18)`。 | 已确认 |
+| Spring Boot | 3.3.5 | 根 `pom.xml` 的 parent。`trade-analytics`、`trade-query`、`trade-common` 自己的 parent 也是 3.3.5。 | 已确认 |
+| Spring Cloud | 2023.0.3 | 根 POM `spring-cloud.version`，以 BOM import。 | 已确认 |
+| Spring Cloud Alibaba | 2023.0.3.4 | 根 POM。用途从依赖看是 Nacos Discovery，不是配置中心热刷新。 | 已确认有依赖；运行时是否只做服务发现，待结合部署确认 |
+| MyBatis-Plus | 3.5.9 | Ingress、Analytics、Query、Storage Local 的 `mybatis-plus.version`。Starter 是 `mybatis-plus-spring-boot3-starter`。 | 已确认 |
+| MySQL 驱动 | Connector/J 8.3.0 | 模块 POM 只依赖 `com.mysql:mysql-connector-j`，没有自己写版本。本地 Maven 仓库中 Spring Boot 3.3.5 BOM 的 `mysql.version` 是 8.3.0。 | 已确认是 BOM 管理值。若构建改了 BOM，以实际构建为准 |
+| 数据库 | MySQL，逻辑库 `trade_flow`、`trade_analytics`。Doris，逻辑库 `trade_warehouse`，MySQL 协议端口在配置里是 9030。 | init SQL 和 `trade-analytics-infra-prod.yaml` | 已确认类型和库名。线上版本号未在仓库里写成 8.0.45 / 4.0.7 的配置项，那两个数字来自仓库 `AGENTS.md`，不是本轮从 JDBC URL 读到的，标为待确认 |
+| ORM | MyBatis-Plus。没有发现 Spring Data JPA。 | starter 依赖和 `*DbServiceImpl extends ServiceImpl` | 已确认使用 MyBatis-Plus；「完全没有别的 SQL 访问」未全仓证伪 |
+| 分表 | ShardingSphere JDBC 5.5.2 | 只在 `trade-storage-local/pom.xml`。 | 已确认依赖存在。路由是否只用于 Storage 100 桶，见存储设计代码，本轮读到 init SQL 的 `_00~_99` 模板，等级为已确认有 100 组物理分表脚本 |
+| 缓存 | Redis。Spring Data Redis。 | `spring-boot-starter-data-redis`。生产 YAML 有 `spring.data.redis`。 | 已确认 |
+| 消息 | Kafka。Spring Kafka 3.2.4 由 Boot 3.3.5 BOM 管理。业务封装是 `com.mtx.core:mtx-messaging`。 | Analytics POM 有 `spring-kafka`。`FlushKafkaConfiguration` 主题 `flushTaskToDoris`。`PickupKafkaConfiguration` 主题 `tradePickupDue`。生产 YAML 有 `spring.kafka.bootstrap-servers`。 | 已确认 Analytics 使用 Kafka。Ingress 主回调路径还使用 Redis 做分析通知，见第 4 节 |
+| 定时任务 | Spring `@Scheduled` | 三个应用类或配置类上有 `@EnableScheduling`。未发现 `@XxlJob`。 | 已确认 |
+| HTTP 服务端 | `spring-boot-starter-web` | Ingress、Analytics、Query | 已确认 |
+| HTTP 客户端 | OpenFeign + LoadBalancer。另外有直接 HTTP 客户端，例如富智云、京东、美团、饿了么 SDK。 | POM 与 `SsmCallbackFeignClientV2`、`ElemeApiClient`、各 `*ApiClient` | 已确认有这些客户端；每个平台是否还有第二套客户端，未全量清点 |
+| JSON | Jackson。Boot BOM `jackson-bom.version` 是 2.17.2。Flink 模块显式写了 `jackson-databind` 2.17.2。 | `trade-common/pom.xml` 与本地 BOM | 已确认 |
+| 校验 | `spring-boot-starter-validation` | Ingress、Analytics | 已确认依赖。不是每个回调都走 Bean Validation，富智云和外卖回调很多是原始字符串 |
+| 观测 | Actuator + Micrometer Prometheus | Ingress、Analytics POM | 已确认依赖。大盘是否接入，待确认 |
+| 代码生成 | Lombok。模块覆盖为 1.18.42。Boot BOM 默认是 1.18.34。 | 模块 `lombok.version` | 已确认以模块属性 1.18.42 为准 |
+| 饿了么 / 淘宝闪购 SDK | `me.ele.openapi:eleme-openapi-sdk:1.31.71` | `trade-ingress/pom.xml` | 已确认 |
+| Flink | 两套 | 见第 3 节 | 已确认 |
+| Doris Flink Connector | `trade-cdc` 使用 `flink-doris-connector-1.18` 25.1.0。另三个作业使用 `flink-doris-connector-1.20` 25.1.0。 | 各模块 POM | 已确认 |
+| 内部基础库 | `mtx-id` 1.1.2，`mtx-security` 与 `mtx-scheduled` 使用 `${mtx-core.version}` 且根 POM 是 1.0.1。`mtx-dataretention` 1.0.2。Analytics 的 `mtx-messaging` 写死 1.1.1，Ingress 使用 `${mtx-core.version}`。 | 各 POM | 已确认版本号不一致这件事本身。运行时最终解析结果未做 `mvn dependency:tree` |
+
+工程版本都是 `1.0.0-SNAPSHOT`。
+
+## 2. 三个服务各自的关键依赖
+
+### Ingress
+
+`trade-ingress/pom.xml` 直接依赖：
+
+- `mtx-id`、`mtx-security`、`mtx-dataretention`、`mtx-messaging`
+- `trade-common`、`trade-storage-api`、`trade-storage-local`
+- Web、Validation、Actuator、Prometheus、Redis
+- MyBatis-Plus、MySQL 驱动
+- Nacos Discovery
+- `eleme-openapi-sdk`
+- OpenFeign、LoadBalancer
+
+Ingress POM **没有** `spring-kafka`。所以「回调主链路用 Kafka」没有依赖证据。分析通知的立即入队代码在 `AnalysisEventDeliveryService`，配置注释要求 Redis 库和 Ingress 的 Analysis Pub/Sub 一致。等级：已确认 Ingress 依赖 Redis；Kafka 是否也被 Ingress 间接带到运行时，待用依赖树确认。
+
+### Analytics
+
+在 Ingress 同类依赖之外，明确增加：
+
+- `spring-kafka`
+- `mtx-scheduled`
+- `mtx-messaging` 版本 1.1.1，和根 POM 的 `mtx-core.version` 1.0.1 不同
+
+Analytics 负责 Doris JDBC 和 Doris Stream Load。`DorisCanonicalFactWriter` 同时持有 JDBC 写入和 `DorisStreamLoadClient`。生产 YAML 里 `target-modes.v1` 是 `STREAM_LOAD`，`default-mode` 是 `JDBC`。含义是：默认模式和 v1 目标模式在配置里同时存在。哪条路径对哪张表生效，要看 `DorisStreamLoadProperties.enabledFor`，本轮只确认两种模式都在代码和配置里出现。
+
+### Query
+
+`trade-query/pom.xml` 描述为读取查询模板并执行 Doris 只读查询。依赖有 Web、OpenFeign、LoadBalancer、Nacos、MyBatis-Plus、MySQL。没有在已读 POM 片段里看到 `spring-kafka`。Query 是否连接 Redis，本轮未读完它的全部配置，标待确认。
+
+## 3. Flink 两套版本
+
+| 模块 | Flink | Flink CDC | Doris Connector | 作业名（shade manifest） |
+| --- | --- | --- | --- | --- |
+| `trade-cdc` | 1.18.1 | 3.0.1 | `flink-doris-connector-1.18` 25.1.0 | `trade-event-storage-to-doris` |
+| `trade-shop-cdc` | 1.20.5 | 3.3.0 | `flink-doris-connector-1.20` 25.1.0 | `trade-shop-mysql-to-doris` |
+| `trade-goods-cdc` | 1.20.5 | 3.3.0 | 同上 | `trade-goods-mysql-to-doris` |
+| `trade-member-cdc` | 1.20.5 | 3.3.0 | 同上 | `trade-member-mysql-to-doris` |
+
+`trade-cdc` 的 POM 注释说明它在打包时替换了 Debezium 的 MySQL streaming 类，原因是原连接器会忽略 MySQL 8 压缩事务。源码里确实有 `io.debezium.connector.mysql.MySqlStreamingChangeEventSource`。这是已确认的代码事实，不表示生产一定开着这个作业。
+
+## 4. Redis、Kafka 各干什么
+
+已从代码确认的用途，不是 Redis 的全部 key：
+
+| 组件 | 已看到的用途 | 类或配置 |
+| --- | --- | --- |
+| Redis | 富智云失败恢复的分布式锁 | `FuiouRecoveryPushScheduled` |
+| Redis | 分析侧同一条广播只被一个实例处理 | `AnalysisPubSubDeliveryLock` |
+| Redis | 同一订单写入互斥 | `OrderWriteLease` |
+| Redis | 门店资料缓存、品牌会员 openId 缓存、映射补偿租约 | `ShopInfo` 缓存、`BrandMemberOpenIdCache`、`MappingCompensationEntityLease` |
+| Redis | Ingress 与 Analytics 的分析事件即时通知所在逻辑库必须一致 | `trade-analytics-infra-prod.yaml` 注释 |
+| Kafka | 事实刷写通知，主题名 `flushTaskToDoris`，5 个分区 | `FlushKafkaConfiguration` |
+| Kafka | 补拉到期通知，主题名 `tradePickupDue`，2 个分区 | `PickupKafkaConfiguration` |
+
+主订单事实不是「回调 HTTP 直接丢进 Kafka 再消费」。已确认的主路径是：HTTP 回调写入 MySQL 来源事件和 Outbox，再立即通知 Analytics；通知失败时 Outbox 还在，由拉取任务补。Kafka 出现在刷写和补拉唤醒。
+
+没有发现 RocketMQ、RabbitMQ 的依赖声明。等级：当前 POM 范围内未发现。不能据此说历史上从未使用。
+
+## 5. JSON 与 HTTP 调用形态
+
+- 富智云订单和支付入口的参数类型是 `@RequestBody String payload`，不是强类型 DTO。解析在 `FuiouOrderPayloadParser`、`FuiouPaymentPayloadParser`。
+- 京东回调 `consumes = application/x-www-form-urlencoded`，body 也是原始字符串。
+- 美团、淘宝闪购同样先接收原始 body。
+- 内部管理接口才较多使用请求对象，例如查询执行的 `ExecuteRequest`、团购同步的 `SyncCommand`。
+
+因此「请求 DTO」不能理解成每个外部平台都有一个公开的 Java 请求类。外部契约首先是原始报文字节。
+
+## 6. 和其他文档数字的差异
+
+`AGENTS.md` 写了 MySQL 8.0.45、Redis 7.0.5、Doris 4.0.7。本轮没有在 POM 或 JDBC URL 里看到这三个服务器版本号。驱动版本 8.3.0 也不等于服务器版本 8.0.45。服务器版本保持待确认。
+
+## 7. 本轮没有做的版本核对
+
+- 没有运行 `mvn dependency:tree`。传递依赖里的 Netty、Tomcat、Logback 小版本未单列。
+- 没有读取实际 Nacos 上的运行配置。仓库 `nacos/` 是代码里的生产基准。
+- 没有连接 MySQL 或 Doris 执行 `SELECT VERSION()`。

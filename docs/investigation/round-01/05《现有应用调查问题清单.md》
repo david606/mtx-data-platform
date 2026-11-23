@@ -1,0 +1,61 @@
+# 05 现有应用调查问题清单
+
+说明：未发现不等于不存在。下面每一项都是本轮读代码后仍不能下结论的事情，以及要补的材料。
+
+## 1. 调查范围本身
+
+| 编号 | 问题 | 为什么现在不能定 | 需要的材料 |
+| --- | --- | --- | --- |
+| Q01 | 口头说的「V2 之前的简单数据处理应用」是不是本仓库？ | 本仓库已经是 `trade-flow` 多模块平台，没有第二个更小的应用模块。 | 业务负责人确认仓库；若另有旧仓库，给出路径 |
+| Q02 | `mtx-core` 旁边这份源码是否就是线上依赖的版本？ | 根 POM 不编译它，版本号在各模块 POM 里还不一致。 | 一次只读的依赖树，或发布清单 |
+| Q03 | 三个 Spring 服务和四套 Flink 作业是否都在生产运行？ | 代码都在，不能证明进程已部署。 | 部署清单或发布记录。不要用口头「应该在跑」代替 |
+
+## 2. 来源和业务名称
+
+| 编号 | 问题 | 当前证据 | 需要确认 |
+| --- | --- | --- | --- |
+| Q04 | POS 订单是不是富智云 `POST /order/store-push`，尤其是渠道码 `01` 收银台？ | 无 POS 字样。有收银台和堂食映射。 | 一笔真实 POS 报文和业务人员对照 |
+| Q05 | 「淘宝团购订单」指哪条链路？ | 淘宝代码是淘宝闪购，SDK 为饿了么。团购核销来自富智云。 | 业务口径：闪购订单、团购券，还是两者都要 |
+| Q06 | 抖音是独立平台还是只作为富智云渠道？ | 只有渠道码 `09` 和团购渠道描述，没有抖音 Controller。 | 是否存在未进本仓库的抖音回调 |
+| Q07 | 京东对外名称用「京东秒送」还是「京东外卖」？ | 两个枚举中文不同。 | 业务命名，避免 V2 做成两个来源 |
+| Q08 | 富智云未知渠道被映射成堂食，是否符合业务？ | `SourceChannelType.UNKNOWN` 的渠道大类是堂食。 | 产品确认，并给出未知码样例 |
+
+## 3. 报文和字段
+
+| 编号 | 问题 | 需要的材料 |
+| --- | --- | --- |
+| Q09 | 富智云订单、支付报文的字段字典，以及 `thirdEventKey`、`messageVersion` 从哪个字段来。 | `FuiouOrderPayloadParser`、`FuiouPaymentPayloadParser` 的下一轮精读，加一份脱敏报文 |
+| Q10 | 京东每种 `messageType` 哪些进分析、哪些只转发 SSM。 | `JdCallbackAdapter.analysisDecision` 与 SSM 路由表 |
+| Q11 | 美团白名单里十几种事件，哪些映射成订单事实。 | `MeituanCallbackAdapter` 和 `MeituanTradeEventHandler` |
+| Q12 | 淘宝闪购 `TaobaoEventType` 全量名单和忽略策略。 | `TaobaoEventType`、`TaobaoEventClassifier` |
+| Q13 | 各平台金额、优惠、配送费、平台服务费的公式是否一致。 | 四个 `*FactMapper` 与 `OrderTurnoverCalculator`，对照 `docs/design/doris/多平台Fact字段映射.md` 时仍要以代码为准 |
+| Q14 | 退款是覆盖原订单金额，还是追加退款事实。 | `FuiouRefundFactMapper`、`JdAfsRefundMapper`、`MeituanRefundFactMapper`、`TaobaoRefundFactMapper` 和归并器 |
+| Q15 | 投诉表、结算分录表由谁写入。 | 搜索写入 `dwd_trade_complaint_fact_v1`、`dwd_trade_settlement_entry_fact_v1` 的生产类 |
+
+## 4. 运行与数据
+
+| 编号 | 问题 | 需要的材料 |
+| --- | --- | --- |
+| Q16 | 线上 MySQL、Redis、Doris 的真实版本是否就是 `AGENTS.md` 里的 8.0.45、7.0.5、4.0.7。 | 只读 `SELECT VERSION()` 或运维提供的版本输出。本轮禁止连生产写库 |
+| Q17 | init SQL 是否等于线上结构。 | 由有权限的人做结构对比。Agent 本轮没有连库 |
+| Q18 | `trade_payment_event` 的幂等不含 `message_version`，重复的新版本支付会被当成同一笔吗？ | 读 `PaymentEventServiceImpl` 冲突分支和一笔改价支付样例 |
+| Q19 | 分析账本 claim 在 Redis 锁失效时能否挡住双写。 | `AnalysisEventProcessingService` 的状态更新条件 |
+| Q20 | Doris 报表读的是 `dwd_trade_*_fact_v1` 还是 `dwd_*_version`。 | 已发布查询模板实际 SQL，或调用方名单 |
+| Q21 | `trade-cdc` 1.18 作业和 Analytics 事实写入是否同时生产。 | 作业运行清单。若两套都写，要确认会不会给同一业务两套数 |
+| Q22 | 会员空回调 `POST /fzy/member_sync` 是否仍被富智云调用。 | 访问日志。代码确定不落库 |
+| Q23 | 团购同步失败后，人工重跑的责任人和是否漏过 4 小时窗口。 | 运维记录。代码写明无持久任务 |
+| Q24 | Query 与 Analytics 是否共用 `trade_analytics` 里的模板表。 | Query 生产数据源 URL |
+| Q25 | 测试 YAML 中的明文口令是否只属于测试库。 | 配置负责人。本报告不抄口令 |
+
+## 5. 下一轮建议阅读顺序
+
+只读，仍然不改代码。
+
+1. 四个来源适配器和对应 FactMapper，把字段映射表做出来。这是 V2 最需要保留的业务规则。
+2. `CanonicalOrderReducer` 与 `CanonicalWriteCoordinator` 的状态推进和金额计算。文件很大，按订单状态、退款、重复版本三个场景读。
+3. `JdCallbackAdapter`、`MeituanCallbackAdapter`、`TaobaoCallbackAdapter` 的验签和「是否进入分析」。
+4. `SsmCallbackBridge.forwardByRoute`，列出转发名单。
+5. Doris 事实表唯一键和查询模板实际 SELECT。确认消费方。
+6. 用脱敏报文走读 parser，核对 Q04、Q05、Q09。
+
+不建议下一轮一开始就读全部 Flink CDC 或全部质检规则。它们是输出和治理，不是订单业务规则的第一来源。除非 Q21 确认版本表仍是报表来源。

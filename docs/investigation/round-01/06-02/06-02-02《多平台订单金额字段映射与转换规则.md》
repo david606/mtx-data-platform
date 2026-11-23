@@ -1,0 +1,40 @@
+# 06-02-02 多平台订单金额字段映射与转换规则
+
+证据等级：代码已确认、生产结构已确认、自动化测试已验证、真实报文已验证、生产样本已验证、代码推断、待业务确认、未发现。本轮没有导出生产订单样本，因此没有“生产样本已验证”的金额口径。
+
+单位规则：
+
+- 富智云 `longValue`（`JsonMapperSupport` 25–32 行）把文本按 `BigDecimal.longValueExact()` 读成整数。带小数或溢出则变成 `null`，不是四舍五入。代码注释和后续写入按分使用。报文单位是否本来就是分：代码已确认读取方式，原始接口单位待业务确认。
+- 京东 `JdMapperSupport.cents`（33–36 行）同样用 `longValue`，负数变成 `null`。类注释写“按分精确读取，不把小数分四舍五入，也不把不明金额补成零”。代码已确认。
+- 美团、淘宝 `yuanToCent`（51–55 行）：`movePointRight(2)` 后 `setScale(0, HALF_UP)`。这是元转分。代码已确认。
+
+| 平台 | 原始字段 | Adapter/Mapper | 统一字段 | 转换 | 单位 | 证据 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 富智云 | `orderAmt` | `FuiouOrderFactMapper` 131–132 行 | 不映射。`orderOriginalAmount` 固定 `null` | 注释写不具备跨平台原价语义 | 未进入统一原价 | 代码已确认 |
+| 富智云 | 商品行汇总 | 同文件 `sumItemOriginal`，130 行 | `goodsOriginalAmount` | 代码汇总 | 整数分口径 | 代码已确认有汇总；行内原价字段含义待对照报文 |
+| 富智云 | `orderDisAmt` | 133 行 | `orderDiscountBaseAmount` | 直接 `longValue` | 分 | 注释：优惠前计价基数，不是优惠后应付。代码已确认 |
+| 富智云 | `payAmt` | 136 行 | `userPayAmount` | 直接赋值 | 分 | 代码已确认 |
+| 富智云 | `fullOrderDisAmt` | 139 行 | `totalDiscountAmount` | 直接赋值 | 分 | 注释禁止再把优惠行加总进去。代码已确认 |
+| 富智云 | `lunchBoxFee` | 140 行 | `packingFeeAmount` | 直接赋值 | 分 | 代码已确认 |
+| 富智云 | `expressAmt` | 141 行 | `userDeliveryFeeAmount` | 直接赋值 | 分 | 代码已确认 |
+| 京东 | `orderTotalMoney` | `JdOrderFactMapper` 130–133 行 | `orderDiscountBaseAmount` | `cents` | 分 | 注释：商品销售价总额，不是商品原价合计。代码已确认 |
+| 京东 | `orderGoodsMoney` | 134–136 行 | `orderAfterDiscountAmount` | `cents` | 分 | 注释称实测等于总额减订单级优惠，并写明该字段未在官方参考单独登记。待业务确认 |
+| 京东 | `orderBuyerPayableMoney` | 137 行 | `userPayAmount` | `cents` | 分 | 代码已确认 |
+| 京东 | `orderDiscountMoney` | 138–141 行 | `totalDiscountAmount` | `cents` | 分 | 注释：只含订单级优惠，不含单品、运费、包装优惠。代码已确认，完整总优惠待金额拆分链路 |
+| 京东 | 商品行 `canteenMoney` 汇总 | 142–144 行 | `packingFeeAmount` | 汇总 | 分 | 代码已确认不用订单级 `packagingMoney` |
+| 京东 | `orderFreightMoney` | 145 行 | `userDeliveryFeeAmount` | `cents` | 分 | 代码已确认 |
+| 美团 | `wmAppOrderFoods` | `MeituanOrderFactMapper` 124 行 | `goodsOriginalAmount` | 商品原价汇总 | 元转分 | 代码已确认有汇总方法 |
+| 美团 | `originalPrice` | 125–127 行 | `orderOriginalAmount` 和 `orderDiscountBaseAmount` | `yuanToCent`，同一字段写两列 | 元转分 | 代码已确认 |
+| 美团 | `total` | 128–129 行 | `orderAfterDiscountAmount` 和 `userPayAmount` | 同一字段写两列 | 元转分 | 代码已确认。是否等于用户实付待业务确认 |
+| 美团 | 活动汇总 `totalDiscount` | 130 行 | `totalDiscountAmount` | Mapper 内先汇总再赋值 | 元转分 | 代码已确认存在汇总变量 |
+| 美团 | 餐盒相关 | 131 行 | `packingFeeAmount` | 局部变量 `packingFee` | 元转分 | 代码已确认有赋值 |
+| 美团 | `shippingFee` | 132 行 | `userDeliveryFeeAmount` | `yuanToCent` | 元转分 | 代码已确认 |
+| 淘宝闪购 | `originalPrice` | `TaobaoOrderFactMapper` 120、123 行 | `goodsOriginalAmount`、`orderDiscountBaseAmount` | 仅快照事件；`yuanToCent` | 元转分 | 非快照事件写 `null`。代码已确认 |
+| 淘宝闪购 | `totalAmount` | 121 行 | `orderOriginalAmount` | 仅快照事件 | 元转分 | 代码已确认 |
+| 淘宝闪购 | `totalPrice` | 124–125 行 | `orderAfterDiscountAmount`、`userPayAmount` | 仅快照事件，同一字段写两列 | 元转分 | 代码已确认 |
+| 淘宝闪购 | `totalActivityAmount` | 126–127 行 | `totalDiscountAmount` | 有优惠摘要时取绝对值 | 元转分 | 代码已确认取绝对值 |
+| 淘宝闪购 | `packageFee` | 128 行 | `packingFeeAmount` | 字段在场才转换 | 元转分 | 代码已确认 |
+| 淘宝闪购 | `deliverFee` | 129 行 | `userDeliveryFeeAmount` | 仅快照事件 | 元转分 | 代码已确认 |
+| 淘宝闪购 | `income` | 130–132 行 | `merchantEstimatedIncomeAmount` | 仅订单详情查询 | 元转分 | 回调不写收入，也不用实付代替。代码已确认 |
+
+四个平台都没有把营业额放在订单 Mapper 里。`turnoverAmount` 由下一份报告的计算器产生。没有用生产报文复核字段语义。等级：映射是代码已确认，字段业务口径多数仍待业务确认。

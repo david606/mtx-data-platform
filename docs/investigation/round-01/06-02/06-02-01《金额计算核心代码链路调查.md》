@@ -1,0 +1,20 @@
+# 06-02-01 金额计算核心代码链路调查
+
+证据等级：代码已确认、生产结构已确认、自动化测试已验证、真实报文已验证、生产样本已验证、代码推断、待业务确认、未发现。本轮没有导出生产订单样本，因此没有“生产样本已验证”的金额口径。
+
+链路不是一个类算完全部平台。原文进 Storage 后，Analytics 按平台 Handler 调 Mapper，得到 `CanonicalChangeSet`，再由 `CanonicalOrderReducer` 归并。订单营业额只在 Reducer 接受变更后调用 `OrderTurnoverCalculator`。写入由 `DorisCanonicalFactWriter` 完成。团购核销不走这条归并，单独由 `FuiouGroupBuyVerificationSyncService` 把查询行写入 Doris。
+
+## 主链路
+
+| 类 | 路径 | 职责 | 是否算金额 | 是否直接写 Doris | 调用关系 |
+| --- | --- | --- | --- | --- | --- |
+| `CanonicalOrderReducer` | `preparation/state/CanonicalOrderReducer.java` | 归并订单、优惠、退款 | 是。第 478 行调用营业额计算 | 否 | 被 `CanonicalWriteCoordinator` 使用 |
+| `OrderTurnoverCalculator` | `preparation/state/OrderTurnoverCalculator.java` | 只算 `turnoverAmount` | 是 | 否 | 只被 Reducer 调用 |
+| `FuiouRefundContributions` | `preparation/state/FuiouRefundContributions.java` | 富智云退款累计 | 是，只覆盖富智云 | 否 | Reducer 在接受富智云退款输入时调用 |
+| `FuiouFinancialSequence` | `preparation/source/fuiou/FuiouFinancialSequence.java` | 富智云不可变 `paySsn` 的版本号 | 不算金额，只生成顺序号 | 否 | 支付、充值、退款 Mapper 的 `sinkSequence` |
+| `DorisCanonicalFactWriter` | `persistence/DorisCanonicalFactWriter.java` | 把归并结果写入事实表 | 不重新定义营业额公式。更新时对多数金额用 `COALESCE`，营业额补丁直接赋值 | 是 | 协调器冻结后调用 |
+| `FuiouGroupBuyVerificationRows` | `maintenance/enrichment/verification/FuiouGroupBuyVerificationRows.java` | 核销查询行映射 | 不计算，只校验并原样放入 `BigDecimal` | 否，由同步服务写入 | 不进入订单 Reducer |
+
+平台 Mapper 都在 `preparation/source/{fuiou,jd,meituan,taobao}`。订单：`FuiouOrderFactMapper`、`JdOrderFactMapper`、`MeituanOrderFactMapper`、`TaobaoOrderFactMapper`。支付：富智云、美团、淘宝有独立 Payment Mapper；京东订单实付在订单 Mapper，未发现独立 `JdPaymentFactMapper`。退款：富智云、美团、淘宝有 `RefundFactMapper`；京东售后是 `JdAfsRefundMapper`。充值只有 `FuiouRechargeFactMapper`。
+
+`OrderTurnoverCalculator` 不覆盖充值、团购核销、退款冲减营业额。`FuiouRefundContributions` 和 `FuiouFinancialSequence` 不覆盖京东、美团、淘宝。等级：代码已确认。

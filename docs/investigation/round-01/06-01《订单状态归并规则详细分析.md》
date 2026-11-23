@@ -1,0 +1,386 @@
+# 06-01 订单状态归并规则详细分析
+
+调查对象：`trade-analytics` 里把多次来源事件收成一份统一订单的代码。本轮没有修改业务工程，没有连接数据库，也没有使用真实订单。用户提供的库地址和口令不写入本文。表结构证据来自 `docs/sql/init/trade-analytics-init.sql` 和 Mapper SQL。
+
+代码里的取消状态拼写是 `CANCELLED`，不是 `CANCELED`。下文按代码枚举书写。
+
+## 1. 调查范围和证据等级
+
+精读了这些类型的实际分支，不只看类名：
+
+| 类型 | 路径 |
+| --- | --- |
+| `CanonicalOrderReducer` | `trade-analytics/src/main/java/com/mtx/trade/analytics/preparation/state/CanonicalOrderReducer.java` |
+| `CanonicalWriteCoordinator` | 同目录 `CanonicalWriteCoordinator.java` |
+| `DomainWatermark` | 同目录 `DomainWatermark.java` |
+| `CanonicalStateMachineRegistry` | 同目录 `CanonicalStateMachineRegistry.java` |
+| `MessageVersionCodec` | 同目录 `MessageVersionCodec.java` |
+| `ComparableMessageVersionCodec` | `trade-common/src/main/java/com/mtx/trade/common/version/ComparableMessageVersionCodec.java` |
+| `OrderStatus`、`PaymentStatus`、`RefundStatus` | `trade-analytics/.../common/canonical/contract/CdmEnums.java` |
+| `OrderWriteLease` | `trade-analytics/.../infrastructure/redis/OrderWriteLease.java` |
+| `AnalysisOrderStateMapper` | `trade-analytics/.../infrastructure/mysql/runtime/mapper/AnalysisOrderStateMapper.java` |
+| 四个来源的订单映射 | `FuiouOrderFactMapper`、`JdOrderFactMapper`、`MeituanOrderFactMapper`、`TaobaoOrderFactMapper`、`TaobaoEventDefinitionProvider`、`FuiouOrderVersionRules`、`JdCallbackMessageVersionCodec`、`MeituanMapperSupport` |
+
+证据等级：
+
+- **已确认**：对应分支就在上述方法里。
+- **推断**：要同时满足映射器和归并器两段代码，但没有用样例报文跑过。
+- **待确认**：不同平台行为不一样，或缺少报文，不能给出唯一结果。
+
+## 2. 订单归并调用链
+
+实时路径已经对上：
+
+1. `CanonicalWriteCoordinator` 在处理单笔事件时计算订单键，并调用 `acquireOrder`。
+2. 用 `orderKey` 读取 `trade_analysis_order_state`。没有行时调用 `restoreCurrentWatermarks`，从 Doris 水位恢复；读不到则从空聚合开始。
+3. `reducer.reduce(...)`，也就是 `CanonicalOrderReducer.reduceInternal`。
+4. 没有任何域被接受，且不需要补写时，直接返回 `STALE`、`DUPLICATE` 或 `CONFLICT`，不创建 Flush 任务。
+5. 有域被接受时，把新聚合写回 `accumulator_json`。若本事件要求立刻刷写，并且当前没有正在执行的刷写版本，`freeze` 在同一个短事务里插入 `trade_analysis_flush_task_index` 和 payload。
+6. 更新条件是 `order_key + state_token`，并且 `replay_owner IS NULL`。影响行数不是 1 就抛 `OrderStateChangedException`。`retryStateChange` 最多再读再试，循环里 `attempt == 2` 时抛出，所以最多 3 次。
+
+回灌调用的是 `reduceReplay`。它进入同一个 `reduceInternal`，只是最后一个参数 `allowImmutableEventReprojection=true`。回灌可以按当前映射器重算同一条不可变来源，但同版本、不同来源内容仍然会冲突。见 `reduceReplay` 的方法注释和 `CanonicalWriteCoordinator` 里对 `reduceReplay` 的调用。
+
+`OrderStatus` 不由归并器自己从字符串解析。来源映射器先写成 `CanonicalOrderMutation.orderStatus`，归并器只在 `VersionDomain.ORDER` 被接受时，把 `DOMAIN_FIELDS` 里的 `orderStatus` 等字段抄到当前订单上。
+
+## 3. 订单唯一标识
+
+**已确认。** `CanonicalWriteCoordinator` 多处使用：
+
+```text
+orderKey = platformCode + ":" + platformOrderId
+```
+
+例如 `FZY:订单号`、`JD:订单号`、`MEITUAN:订单号`、`TAOBAO:订单号`。`trade_analysis_order_state.order_key` 是主键。同表还有 `source_system`、`platform_code`、`platform_order_id`，但这三个字段不是主键。
+
+平台订单号来自各映射器：
+
+| 平台 | 字段 | 类 |
+| --- | --- | --- |
+| 富智云 | 报文 `orderNo` | `FuiouOrderFactMapper.map` |
+| 京东 | 事件 `sourceObjectId`，并要求等于详情 `orderId` | `JdOrderFactMapper.map` |
+| 美团 | 事件上的平台订单号，映射器写入 `platformOrderId` | `MeituanOrderFactMapper` |
+| 淘宝闪购 | 映射器写入 `platformOrderId` | `TaobaoOrderFactMapper` |
+
+品牌 `brandId`、内部门店 `internalShopId`、平台门店 `platformShopId` 会放进订单事实，用来补齐主数据。它们不参与 `orderKey`。同一平台订单号在不同品牌下不会分成两把键。若两个品牌真有相同平台订单号，会落到同一行。这种情况有没有，**待确认**。
+
+同一业务订单不能从两个 `platformCode` 合成一把键。富智云键和美团键是两行。富智云渠道码 `09` 会标成抖音渠道，但订单键仍是 `FZY:`。**已确认**键的算法；业务上是否应合并，**待确认**。
+
+Doris 事实行的身份在 `DorisCanonicalFactWriter` 里同样出现 `platformCode + ":" + platformOrderId`。MySQL 状态主键和 Doris 订单事实不是同一个自增主键。第三方订单号是业务键的后半段，不是 `trade_analysis_order_state` 之外的另一套数据库主键。
+
+## 4. 版本控制规则
+
+### 4.1 DomainWatermark 是什么
+
+**已确认。** `DomainWatermark` 是一条记录，不是全订单的一个版本号。字段有：
+
+- `version`：该域已经接受的版本。
+- `state`：该域的标准状态，类型是 `CanonicalEventState`。
+- `payloadSha256`、`eventId`、`storageId`：这次接受来自哪份原文。
+- `snapshotSource`、`snapshotCompleteness`：快照来自回调还是详情查询，以及完整度。
+- `domainFingerprint`：该域内容的指纹。
+
+域在 `VersionDomain`：`CORE`、`DETAIL`、`ORDER`、`FULFILLMENT`、`DELIVERY`、`DELIVERY_MODE`、`PAYMENT`、`PREORDER`、`CANCEL_FLOW`、`REFUND_FLOW`、`REFUND_SUMMARY`、`COMPLAINT`。订单状态、支付、退款流程各用各的水位，不能拿支付版本和订单版本比大小。
+
+这些水位放在 `CanonicalOrderAggregate` 里，再序列化进 `trade_analysis_order_state.accumulator_json`。
+
+### 4.2 messageVersion 从哪里来
+
+接入层先给来源事件一个 `messageVersion`。分析映射器再决定每个域用哪个 long。比较发生在 `CanonicalOrderReducer.reduceInternal`：只比较同一域的 `candidate.version()` 和 `stored.version()`。
+
+各来源编码不同，**已确认不是统一公式**：
+
+| 来源 | 订单域版本怎么来 | 证据 |
+| --- | --- | --- |
+| 富智云 | `FuiouOrderVersionRules.orderVersion`：`(100 + 状态等级) * 10_000_000_000_000 + recUpdTm`。创建 10、已支付 15、接单 20、取餐 40、完成/取消/99 都是 90。 | `orderVersion` 与 `MessageVersionCodec.encode` |
+| 美团现行 v2 | `MeituanMapperSupport.domainVersion` 把状态等级和业务时间编成 `stateRank * BASE + timestamp`。等级：状态 2 是 20，4 是 40，8 是 80，9 是 90。 | 注释写明不能直接用事件版本，否则晚到的低阶段会覆盖完成 |
+| 美团旧 v1 | 订单域直接用事件上的 `messageVersion`，不再套状态等级。 | `domainVersion` 的 `LEGACY_V1` 分支 |
+| 淘宝闪购 | `TaobaoOrderFactMapper.version` 调用 `MessageVersionCodec.encode(definition, timestamp)`。`ORDER` 域策略是 `STATE_RANK_THEN_TIMESTAMP`，所以也是状态等级乘 BASE 再加时间。 | `CanonicalStateMachineRegistry` 中 `ORDER` 的 `ranked` |
+| 京东 | 订单、支付、履约等域都直接用事件 `messageVersion`。接入编码是 `epochMillis * 1000 + tieCode`，tie 小于 1000。时间在前，状态等级不在这个 long 里。 | `JdCallbackMessageVersionCodec`、`JdOrderFactMapper` |
+
+公共编码 `ComparableMessageVersionCodec` 注释写明：不同来源、不同域、不同编码方案的 long 不能互相比较。归并器本身也不跨域比较。
+
+### 4.3 更高版本
+
+`candidate.version() > stored.version()` 时该域被接受，水位换成新值。
+
+若 `CanonicalStateMachineRegistry.isTransitionAllowed` 返回 false，代码只打 `invalidTransition` 指标和 warn 日志，**仍然接受**。见 `reduceInternal` 里 `stored == null || candidate.version() > stored.version()` 这一支。状态机不是拒绝条件。
+
+`ORDER` 域允许规则是：相同状态允许；策略为 `STATE_RANK_THEN_TIMESTAMP` 时，新状态的 `phaseRank` 必须大于等于旧的。等级是创建 10、接单 20、完成 80、取消 90、失效 90。支付域策略是 `TIMESTAMP_ONLY`，`isTransitionAllowed` 对任何不同状态都返回 true。
+
+富智云、美团 v2、淘宝把状态等级放进版本 long。等级差 1 就乘 `10^13`，大于任何合法时间。所以这些平台上，低等级事件的版本不可能大于高等级事件。京东没有把等级放进版本，晚到的低状态只要业务时间更新，版本就更大，会被接受，同时打出非法流转日志。
+
+### 4.4 更低版本
+
+`candidate.version() < stored.version()` 时该域记为陈旧，不改水位。若本次没有任何域被接受，决定是 `STALE`。协调器普通路径不创建 Flush 任务。
+
+### 4.5 相同版本、不同报文
+
+同一版本继续往下分，顺序是固定的：
+
+1. 京东支付域在已经有收款时，不因更高查询覆盖原付款时间；付款时间矛盾则该域冲突。
+2. 美团详情查询若已被更新的核心回调盖过，直接当陈旧。
+3. `INIT_IF_ABSENT` 的支付域在已有水位时当重复。
+4. 同版本 CORE：详情查询的优先级 1，回调的优先级 0。查询可以盖过同版本回调；反向则当重复。优先级相同才继续比内容。
+5. 有快照完整度时，更完整的接受，更不完整的当重复，相同完整度再比指纹。
+6. 指纹相同，或旧数据没有指纹但 `payloadSha256` 相同：重复。
+7. 指纹不同，或状态不同：`conflicts`。决定变成 `CONFLICT`；若同时有别的域被接受，决定是 `ACCEPT_WITH_CONFLICT`。
+
+版本缺失：映射器把该域版本留空，`candidates` 不放入该域，本次不能推进它。富智云未知 `orderState` 的 `orderVersion` 返回 null。京东未知状态不写 `ORDER` 域。
+
+乱序：没有单独的“按到达时间排序”队列。后进入 `reduce` 的事件用版本和水位决定，不用进入系统的先后。Redis 只保证同一订单不会两笔同时进入 `reduce`。
+
+## 5. 订单状态机
+
+这里要分开两层。
+
+事实字段 `CdmEnums.OrderStatus`：`CREATED`、`PAID`、`ACCEPTED`、`COMPLETED`、`CANCELLED`、`INVALID`、`CLOSED`。
+
+归并水位里的 `ORDER` 域状态没有 `PAID`，也没有 `CLOSED`。它只有 `CREATED`、`ACCEPTED`、`COMPLETED`、`CANCELLED`、`INVALID`。`PAID` 出现在 `PAYMENT` 域。`CLOSED` 出现在退款流程和投诉域，不出现在订单域。
+
+更新方法都是 `CanonicalOrderReducer.reduceInternal` 接受 `ORDER` 域后，`merge` 按 `DOMAIN_FIELDS` 复制 `orderStatus`、`sourceOrderStatus`、完成/取消/关闭时间、取消原因和 `orderVersion`。
+
+### CREATED
+
+- 富智云来源码 `01`、`88`、未知码。未知码没有订单版本，不能推进。标准水位状态也是 `CREATED`，等级 10。
+- 京东 `31000`、`41000`。京东 `31020` 的事实字段是 `PAID`，但水位状态被写成 `CREATED`。
+- 美团来源 `2`。
+- 淘宝映射里没有单独的“已创建”订单事件；`orderStatus(CREATED)` 只在水位状态恰好是 `CREATED` 时使用。哪些淘宝事件会给出 `CREATED`，本轮没有在 `TaobaoEventDefinitionProvider` 前半段看到，**待确认**是否还有别的类型。
+
+从空订单可以进入。富智云和美团 v2、淘宝上，它的版本低于接单和完成，后到的创建不能覆盖它们。京东若创建回调的业务时间更晚，版本更大，会覆盖，尽管状态机认为不合法。
+
+### PAID
+
+这是事实字段，不是 `ORDER` 水位状态。
+
+- 富智云来源码 `02`、`77`。订单版本等级 15，水位状态仍是 `CREATED`。另外，`FuiouOrderFactMapper` 对支付推送和退款推送都把事实 `paymentStatus` 写成 `PAID`。注释说明这两种推送都发生在支付成功之后。所以富智云“创建”推送的订单状态可以是 `CREATED`，支付状态已经是 `PAID`。
+- 京东 `31020`：事实 `PAID`，水位 `CREATED`，支付域 `PAID`。
+
+允许进入：空订单，或当前订单版本更低。不允许被更低版本覆盖。不存在“必须先 CREATED 才能 PAID”的拒绝分支。
+
+### ACCEPTED
+
+- 富智云 `03`。`04` 取餐的事实订单状态也是 `ACCEPTED`，履约状态是 `COURIER_PICKED_UP`，订单版本等级 40，水位状态是 `ACCEPTED`。
+- 京东 `32000`、`33040`。
+- 美团 `4`。
+- 淘宝事件类型 12。
+
+水位等级 20。高于创建，低于完成、取消、失效。
+
+### COMPLETED
+
+- 富智云 `05`、`06`。`99` 且有完成时间 `finshTm` 时，事实状态也是 `COMPLETED`。水位状态一律是 `COMPLETED`，版本等级 90。
+- 京东 `33060`、`90000`。
+- 美团 `8`。
+- 淘宝事件类型 18。
+- `OrderCompletionEventMapper` 也会把补齐结果写成 `COMPLETED`。它和回调谁更优先，取决于各自写入的域版本，**待确认**每一类补齐消息的版本是否总是更高。
+
+枚举注释写明：完成不代表之后不会退款。完成不是退款的禁止状态。
+
+### CANCELLED
+
+- 富智云 `00`。版本等级和完成相同，都是 90。谁后发生看 `recUpdTm`，不是看状态名。
+- 京东 `20020`、`20040`。`20030` 只进取消流程 `REQUESTED`，订单状态保持 null，不把订单标成取消。
+- 美团 `9`，等级 90，高于完成的 80。所以美团 v2 上，取消版本必然大于完成版本，后到的完成盖不过已接受的取消。
+- 淘宝事件类型 14。取消和失效的水位等级都是 90，同时间的不同内容会走同版本冲突。
+
+富智云完成和取消等级相同，**可以互相覆盖**，只要后来事件的 `recUpdTm` 更大。这不是“取消不能回到完成”的硬拒绝。
+
+### INVALID
+
+只在淘宝事件类型 15、17 看到：订单域 `INVALID`，履约域 `CANCELLED`。事实 `OrderStatus.INVALID` 由 `TaobaoOrderFactMapper.orderStatus` 从水位状态转出。其他三个平台的已读映射没有 `INVALID`。
+
+等级 90，和取消相同。时间更新的同级状态可以覆盖，因为版本里加了时间。
+
+### CLOSED
+
+只在富智云 `99` 且没有 `finshTm` 时，事实字段写成 `CLOSED`。水位状态却仍是 `COMPLETED`。
+
+`merge` 里有专门分支：来源码是 `99`、没有完成时间、当前事实已经是 `COMPLETED` 或 `CANCELLED` 时，从本次来件中去掉 `orderStatus` 和 `closedTime`，不把完成或取消改成关闭。当前履约状态已有值时，也不用 `99` 的履约状态覆盖。
+
+若 `99` 先到，当前还不是完成或取消，事实状态会写成 `CLOSED`。之后真正的 `05` 完成是否能覆盖，取决于 `05` 的 `recUpdTm` 是否更大。两者版本等级都是 90。**已确认**比较规则；一笔 `99` 早于 `05` 时的最终字段，要有两笔报文的 `recUpdTm` 才能定，**待确认**业务上是否总会这样送。
+
+### 回退、来源优先级、时间优先级
+
+- 富智云、美团 v2、淘宝：订单域低等级不能靠更晚到达覆盖高等级，因为等级已经放进版本。同等级比业务时间。
+- 京东：订单域只比接入层的时间版本。状态机不拦截回退。
+- 同版本 CORE 才有来源优先级：详情查询高于回调。订单状态域没有这套优先级。
+- 到达先后不是优先级。Redis 只把并发变成先后执行。
+
+## 6. 退款和支付状态的关系
+
+**已确认：退款不自动改写 `OrderStatus.COMPLETED`。** 完成之后仍可接受退款域。
+
+富智云退款推送 `pushType=3`：
+
+- 订单支付事实仍写 `PAID`。注释写明退款不改变“发生过支付”。
+- `orderPayState=8` 把退款范围写成部分，`9` 写成全额。事实 `refundStatus` 写成 `SUCCESS`，不是把 `paymentStatus` 改成 `PARTIALLY_REFUNDED`。
+- `paymentStatus` 枚举里虽然有 `PARTIALLY_REFUNDED` 和 `FULLY_REFUNDED`，富智云订单映射没有使用它们。
+- 退款流程域状态是 `SUCCESS`。版本来自退款流水号里的时间和秒内序号，不是 `recUpdTm`。同一秒多笔退款因此不会撞成同一版本。
+- 退款推送不取得 `CORE`、`DETAIL` 所有权，不能用退款里的商品子集替换整单商品。
+
+美团、淘宝、京东的退款是单独的退款实例。`mergeRefundInstances` 按 `refundId` 比较 `sourceVersion`：
+
+- 更高版本替换该笔退款。
+- 更低版本记陈旧。
+- 同版本且指纹相同记重复。
+- 同版本指纹不同记冲突。
+- 已经成功的退款，后面来一条非成功通知：版本不低则冲突，版本更低则陈旧。成功不能被申请或拒绝撤销。
+- 成功但新报文没有金额、旧状态有金额，也是冲突。
+
+部分退款和全额退款：
+
+- 富智云用 `RefundType.PARTIAL` / `FULL`，外加 `RefundStatus.SUCCESS`。
+- 美团退款详情 `refund_type=1` 为部分成功，`2` 为全额成功，汇总状态 `PARTIAL_SUCCESS` 或 `FULL_SUCCESS`。
+- 淘宝用退款实例上的 `RefundType`。整单全额还要求来源类型是 `normal`。`applyRefundSummary` 在存在成功全额实例时写 `FULL`，否则有部分成功则写 `PARTIAL`。
+- `RefundStatus.PARTIAL` 和 `FULL` 的 `operationStatus()` 会折成 `SUCCESS`。订单上同时有“退款是否成功”和“范围是部分还是全额”。
+
+退款先于完成到达：
+
+- 富智云：退款订单版本等级也是 90。若当时还没有完成，`99` 且无完成时间会把事实状态写成 `CLOSED`，并接受退款域。之后完成事件只有 `recUpdTm` 更大才能推进订单域。
+- 淘宝：退款事件类型 30 到 39 只映射退款域，不映射 `ORDER` 域。先到的退款不会把订单改成完成或取消。后到的完成事件类型 18 再按自己的订单版本决定是否覆盖订单域。
+- 京东售后和订单详情是不同事件。退款实例版本和订单域版本分开。先到退款不会因为自己是退款就把订单域改成完成。订单域仍等订单详情自己的 `messageVersion`。
+
+支付状态和退款状态是两套字段。支付域被接受时才复制 `paymentStatus`。退款汇总被接受时才复制 `refundStatus` 和 `refundType`。
+
+## 7. 并发控制
+
+`OrderWriteLease.tryAcquire`：
+
+- Redis 键：`trade:analytics:order-write:` 加上 `orderKey`。
+- `SET NX`，TTL 60 秒。值是随机 owner。
+- 拿不到返回 null，协调器抛 `OrderCoordinationBusyException`，文案是“订单正在处理中”。
+- 后台每 20 秒续期。只有 owner 还是自己才续期。进程内认为安全窗口约 40 秒，短于 Redis 60 秒。
+- 释放用 Lua：值仍是 owner 才删除。关闭进程时不主动删除租约，注释说明关闭不代表 Doris 请求已经结束。
+- Redis 抛异常时也当成忙，不继续写。
+
+数据库保护 **已确认**：
+
+- 主键 `order_key`。
+- 更新必须带读到的 `state_token`，成功后换成新 token。
+- 条件包含 `replay_owner IS NULL`。有回灌占用时实时更新失败。
+- 插入撞主键则 `OrderStateChangedException`，不能覆盖另一笔刚建的行。
+- 这不是 `SELECT FOR UPDATE`。保护方式是乐观令牌。失败方退出本次事务，重新读取再归并。
+
+两笔事件同时到达：只有一笔拿到 Redis 租约。另一笔忙退回，由处理账本稍后重试。先完成的一方把结果写入 `accumulator_json`。后执行的一方以新水分为输入再 `reduce`。不会在一次 `reduce` 里把两笔并行合并。
+
+失败重试：若上次已经接受并提交，重试看到的版本不低于本次，会走重复或陈旧，不会再把旧内容写回去。若上次在提交前失败，状态没变，重试会再归并一次。归并是纯函数式比较，同一输入应得到同一决定。**已确认**比较规则；映射器若依赖当前时间，重复归并可能产生不同指纹，本轮没有看到 `reduce` 用当前时间当版本，版本来自报文。当前时间只用于脏窗口的 `now` 和 `deadline`。
+
+重放：`reduceReplay` 对同一 `eventId + storageId + payloadSha256` 允许按新映射重算。不同报文的同版本仍然冲突。实时重复投递不能走这条重算分支。因此普通重试不会用旧版本覆盖新水位；显式回灌可以重写同一不可变事件的投影。回灌期间 `replay_owner` 挡住实时更新。
+
+## 8. 状态持久化和恢复
+
+| 存储 | 内容 | 证据 |
+| --- | --- | --- |
+| `trade_analysis_order_state` | 当前归并结果。`accumulator_json` 含订单、各域水位、退款水位。`dirty` 表示还没刷到 Doris。 | init SQL 与 `apply` |
+| `trade_analysis_order_replay_context` | 回灌原计划，主键也是 `order_key` | init SQL |
+| `trade_analysis_flush_task_index` / `trade_analysis_flush_task_payload` | 一次冻结快照。唯一键 `(order_key, sink_revision)`。payload 创建后不修改 | init SQL 与 `freeze` |
+| Doris `dwd_trade_*_fact_v1` | 刷写任务成功后的事实，不是归并过程中的草稿 | `DorisCanonicalFactWriter` 由 Flush 调用。归并当时不直接写 Doris |
+
+重启：状态在 MySQL。进程内存没有订单状态机。Redis 租约过期后其他实例可以继续。未完成的 Flush 任务仍在表里，`CanonicalFlushTask` 会再扫。
+
+状态行可以在完成后删除。`newState` 注释写明完成后 7 天可物理删除。删除条件在 `deleteExpiredCompleted`：不脏、没有活动刷写、没有回灌、没有未完成 Flush。删掉之后，下一笔事件走 `restoreCurrentWatermarks`，用 `CanonicalOrderWatermarkReader` 从已落仓事实恢复水位，再 `reducer.restoreWatermarks`。恢复失败或没有读到时从空聚合开始。空聚合可能让旧事件重新被接受，所以删除条件把未完成任务排除在外。恢复出的字段是否包含全部订单状态，**待确认**，本轮没有逐列核对水位读取器。
+
+历史回灌复用 `reduceReplay`，不是另一套状态名。它仍受 Redis 租约和 `state_token` 约束。
+
+## 9. 六个验证场景
+
+下列结果按虚构订单推演分支。没有运行测试。平台行为不同的地方不合并成一个答案。
+
+### 场景 A：创建、支付、接单、完成
+
+进入 `CanonicalWriteCoordinator` 的单事件处理，再进 `CanonicalOrderReducer.reduceInternal`。
+
+富智云，假设四次 `pushType=1`，`orderState` 依次是 `01`、`02`、`03`、`05`，`recUpdTm` 递增。
+
+| 步骤 | 订单域版本等级 | 命中分支 | 事实订单状态 | 支付状态 |
+| --- | --- | --- | --- | --- |
+| 01 创建 | 110 段 | 无旧水位，接受 | `CREATED` | `PAID` |
+| 02 支付 | 115 段 | 版本更高，接受 | `PAID` | `PAID` |
+| 03 接单 | 120 段 | 版本更高，水位 `CREATED` 到 `ACCEPTED` 合法 | `ACCEPTED` | 支付域只有 `payTm` 更新才会变 |
+| 05 完成 | 190 段 | 版本更高，接单到完成合法 | `COMPLETED` | 仍是 `PAID`，除非付款时间版本推进 |
+
+每步 `ORDER` 域的默认刷写策略：创建是 `BUFFER`，接单和完成是 `FLUSH`。完成这一步在没有活动刷写时会 `freeze`，生成 Flush 任务。前面的 `BUFFER` 只把状态标脏，等到防抖时间或最晚等待时间再刷。**已确认**策略来自 `CanonicalStateMachineRegistry`。是否每步都立刻有任务，取决于当时 `active_flush_revision` 和事件计划，**不能**说四步都各插入一条任务。
+
+京东若四次回调的业务时间递增，因为版本不含状态等级，也会依次接受。事实状态依次是 `CREATED`、`PAID`、`ACCEPTED`、`COMPLETED`。支付域在 `31000` 可以是 `UNPAID`，从 `31020` 起是 `PAID`。这和富智云不同。
+
+美团没有“已支付”这个订单状态。状态 2、4、8 对应创建、接单、完成。支付是否单独变化要看该报文有没有支付金额，**待确认**具体报文。
+
+### 场景 B：完成之后部分退款
+
+富智云：先有 `05` 完成，后有 `pushType=3`、`orderPayState=8`、来源码 `99`、没有 `finshTm`，且退款 `recUpdTm` 更大。
+
+- 订单域版本同为 190 段，时间更大，版本比较上会接受。
+- `merge` 发现当前已是 `COMPLETED`，去掉来件里的 `orderStatus` 和 `closedTime`。事实订单状态保持 `COMPLETED`。
+- `REFUND_FLOW` 接受，状态 `SUCCESS`。
+- 退款范围 `PARTIAL`，`refundStatus=SUCCESS`。
+- `paymentStatus` 不会改成部分退款，来件仍写 `PAID`。只有支付域版本高于旧 `payTm` 才复制支付字段。退款版本用的是退款流水，不是 `payTm`。支付状态保持 `PAID`。
+- 退款流程的刷写策略是 `FLUSH`。本次有域被接受，会生成或并入刷写。若当时已有活动刷写，只更新脏状态，不立刻再 `freeze`。
+
+证据：`FuiouOrderFactMapper.eventPlan`、`merge` 的 `99` 分支、`refundSummaryState`。**已确认**。
+
+### 场景 C：完成先到，支付后到
+
+富智云：完成的订单版本等级 190，支付等级 115。后到的支付在订单域走 `candidate.version() < stored.version()`，订单状态保持 `COMPLETED`，该域陈旧。支付域单独用 `payTm`。若完成报文已经用同一个 `payTm` 写过支付域，后到支付是同版本：指纹相同则重复，不同则冲突。最终订单状态仍是 `COMPLETED`。支付状态在冲突时不会被后到报文覆盖。**已确认**比较方向；同 `payTm` 的指纹是否相同取决于两边映射结果，正常同一支付报文应相同，**推断**为重复。
+
+京东：后到支付回调若业务时间更新，`messageVersion` 更大。订单域被接受，即使从 `COMPLETED` 回到 `CREATED` 不合法，也只记日志。事实订单状态会变成 `PAID`。支付域同时变成 `PAID`。会生成新的刷写任务，前提是该事件的计划或查询屏障要求 `FLUSH`，并且没有活动刷写。**已确认**这是京东编码的结果，不是富智云的结果。
+
+不能给“所有平台”一个统一最终状态。
+
+### 场景 D：版本 3 先到，版本 2 后到
+
+这里的版本指同一域的 long。版本 3 已写入水位后，版本 2 命中更小分支，该域不接受。若这次只有这个域，决定是 `STALE`。`CanonicalWriteCoordinator` 在 `!reduction.accepted()` 且不需要美团补写时返回 `STALE`，不调用 `freeze`。订单状态和支付状态保持版本 3 的结果。不生成新事实任务。
+
+**已确认**这一比较。若“版本 3”和“版本 2”属于不同域，它们不会互相抵消，**不能**把结论用到跨域编号上。
+
+### 场景 E：同一订单、同一事件、同一版本再发一次
+
+同一域版本相等，指纹相同，或没有指纹但 `payloadSha256` 相同：该域记重复。全部域都如此且没有新退款时，决定 `DUPLICATE`。普通回调不 `freeze`。状态不变，不生成新任务。
+
+美团详情查询的重复有例外：`meituanDuplicateWrite` 会把这次 outbox 挂到现有刷写上，避免查询还没写完就被当成重复 ACK。那是补 ACK，不是用重复报文覆盖新状态。
+
+若同版本但映射结果指纹不同，决定是 `CONFLICT`，同样不把冲突域写入水位。**已确认**。同一字节重放、映射器无随机值时指纹应相同，**推断**为 `DUPLICATE`。
+
+### 场景 F：支付和退款同时到达
+
+两笔都进入 `CanonicalWriteCoordinator.acquireOrder`。Redis `SET NX` 只有一笔成功。失败笔抛 `OrderCoordinationBusyException`，不会和成功笔同时 `reduce`。
+
+成功笔先提交自己的 `state_token`。失败笔稍后重试，`getById` 读到新 JSON，再 `reduce`。最终状态是“第二笔相对第一笔水位”的结果，不是两笔交织的中间态。
+
+第二笔的订单状态和支付状态取决于平台和版本，场景 B、C 已经说明富智云和京东不同。没有报文时间就不能写死最终枚举。机制 **已确认**，最终两个状态 **待确认**。
+
+重试不会在同一把旧令牌上再写一次。令牌变了，`updateStateIfUnchanged` 影响 0 行，抛 `OrderStateChangedException`，然后重读。最多 3 次。
+
+## 10. 已确认规则
+
+1. 统一订单键是 `平台编码:平台订单号`。品牌和门店不是键的一部分。
+2. 水位按域分开。订单、支付、退款流程不能拿一个版本号互相比较。
+3. 同一域只接受严格更大的版本。更小记陈旧。相同版本看优先级、完整度、指纹和原文 SHA。
+4. 状态机发现不允许的流转时只记录，不拒绝更高版本。
+5. 富智云、美团 v2、淘宝的订单域版本包含状态等级，低等级盖不过高等级。京东订单域版本是业务时间，低等级可以靠更晚时间覆盖。
+6. `PAID` 和 `CLOSED` 是事实字段。`ORDER` 水位没有这两个状态。
+7. 富智云退款不把 `paymentStatus` 改成部分退或全额退，而是另写退款状态和退款范围。完成后仍可退款。
+8. 已成功的退款实例不能被后续非成功通知撤销。
+9. 同一订单的并发由 Redis 租约串行化，数据库用 `state_token` 防止写旧行。
+10. 归并草稿在 MySQL。Doris 只接收冻结后的 Flush 快照。回灌走同一归并器的重算入口。
+
+## 11. 待确认规则
+
+1. 两个品牌出现相同平台订单号时，合成一单是否符合业务。
+2. 淘宝是否存在会写成 `OrderStatus.CREATED` 或 `PAID` 的事件。已读映射里订单事件从接单开始，失效和关闭的来源不完整。
+3. `OrderCompletionEventMapper` 的补完成版本是否总是高于回调。
+4. 富智云 `99` 先于 `05` 时，两边 `recUpdTm` 的真实顺序。
+5. 美团支付状态在“只有订单状态、没有支付金额”的报文里停留在什么值。
+6. 状态行删除后，从 Doris 恢复的水位是否含全部订单字段。
+7. 场景 F 在没有具体平台和时间前，不能写最终状态。
+
+## 12. 对 MTX Data Platform V2 的设计输入
+
+这些是从现状抽出的约束，不是 V2 已经实现的事实。
+
+1. 订单身份至少要带平台。只有第三方订单号会把富智云和美团撞在一起。品牌要不要再进主键，需要业务先回答待确认项 1。
+2. 不要设计成一个全局 `messageVersion`。现状至少有订单、支付、退款三条水位，编码方式还按平台不同。
+3. 若 V2 希望“完成不能退回已支付”，必须在比较前把状态等级放进版本，或在拒绝分支真正丢弃更新。现状的状态机检查挡不住京东这种时间版本。
+4. 完成和退款要分开保存。用退款去改写完成，会和现有富智云 `99` 保护相反。
+5. 部分退款和全额退款是退款范围，不是订单状态，也不是富智云的支付状态。
+6. 同一订单的并发要有单写者。现状用 Redis 加上令牌；V2 可以换实现，但不能让两笔事件同时基于同一旧状态写入。
+7. 归并状态和已经发布的事实要分开。现状用 MySQL 聚合加不可变 Flush 快照。重试重复事件应得到重复或陈旧，而不是再覆盖更新的水位。
