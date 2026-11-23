@@ -51,14 +51,20 @@
 | ObservedAmount | 某个路径是否已按某一版映射产生观测 | 经营额有没有算出来 |
 | AmountCalculation | 某一版计算规则是否已产出结果 | 原文在不在，映射完没完成 |
 
-映射规则和某一次观测的结果也不是同一个状态：
+四个名字回答四个问题，不能互相代替：
 
-| 名称 | 放在哪 | 回答 |
-| --- | --- | --- |
-| AmountMapping.lifecycleStatus | 映射规则 | `DRAFT`、`ACTIVE`、`RETIRED`。当前全部为 `DRAFT`。只有 `ACTIVE` 才能用于新的正式观测 |
-| mappingResultStatus | 本次设计结论，将来落到观测的 MappingStatus | `CANDIDATE`、`MULTI_CANDIDATE`、`CONFLICT`、`UNIDENTIFIED`、`UNMAPPED`、`DISALLOWED`。没有 `CONFIRMED` |
-| EvidenceStatus | 观测或规则所依据的材料 | `E1-A`、`E1-B`、`E2`、`E3`、`E4`、`E5`、`E6`、`NONE` |
-| SemanticStatus | 语义确认到哪一步 | 与 06-03-01 相同，另加本文不把 E4 升成已确认 |
+| 名称 | 放在哪 | 取值 | 回答 |
+| --- | --- | --- | --- |
+| AmountMapping.lifecycleStatus | 映射规则 | `DRAFT`、`ACTIVE`、`RETIRED` | 这版规则能不能用于新的正式观测。它就是 06-03-01 映射定义侧的 MappingStatus。当前全部为 `DRAFT` |
+| ObservedAmount.mappingStatus | 一次观测的执行结果 | `MAPPED`、`UNMAPPED`、`CONFLICT` | 这次有没有把路径采纳为正式标准金额。它就是 06-03-01 映射执行侧的 MappingStatus |
+| candidateDisposition | 只存在于本设计文档 | `SINGLE_CANDIDATE`、`MULTI_CANDIDATE`、`HOLD_UNIDENTIFIED`、`CONFLICTING_CANDIDATES`、`NO_AMOUNT`、`BLOCKED_BY_ELIGIBILITY` | 设计阶段如何看待候选。它不是 MappingStatus，也不能批准规则 |
+| mappingEligibility | 标准类型定义 | 冻结文档的五个值 | 这个类型允不允许被字段映射指向 |
+
+06-03-01 把定义侧和执行侧都叫 MappingStatus。本文不再另造 `CANDIDATE`、`MULTI_CANDIDATE`、`UNIDENTIFIED`、`DISALLOWED` 这些 MappingStatus。`DISALLOWED` 只保留为类型资格。证据状态和语义状态仍与 06-03-01 相同，E4 不能升成已确认语义。
+
+只有 `lifecycleStatus=ACTIVE` 的规则，才能让新报文产生正式标准金额观测，此时执行状态才是 `MAPPED`。目标类型仍是 `DRAFT` 时，规则不能批成 `ACTIVE`。当前因此不存在 `MAPPED` 的正式业务金额观测。
+
+两个解释都不能选时，设计评估写 `CONFLICTING_CANDIDATES` 或 `MULTI_CANDIDATE`。若执行时仍把同一路径写成两个正式类型，ObservedAmount.mappingStatus 必须是 `CONFLICT`，原文仍只有一份，不能有两条 `MAPPED`。
 
 `mappingId` 标识“哪个平台、哪份契约、哪条路径、准备指向哪个类型”。`mappingVersion` 标识这一定义的正文版本。`sourceContractId` 标识契约。`sourceContractVersion` 标识契约材料自己的版本。四者不能互相代替。
 
@@ -81,14 +87,19 @@ AmountSource 至少保留：`platform`、`sourceInterface`、`sourceMessageType`
 | --- | --- | --- | --- | --- |
 | `SC-JD-MSG-ORDER-CREATED` | `JD` | 京东“创建新订单消息”，消息名 `orderCreated`。URL 见 SRC-03 | 页面写更新于 2025-12-25 13:19:44 | E1-A |
 | `SC-JD-QUERY-EXCERPT` | `JD` | 仓库摘录 `docs/references/jd/jd.o2o.order.es.query.md`。不是 SRC-03 那一页 | 未提供。是否现行，SRC-002 未关闭 | E1-B |
+| `SC-JD-CODE-DETAIL` | `JD` | 旧代码从订单详情读取、但摘录字段表没有单独登记的金额名 | 未提供。不是官方契约号 | E4 |
 | `SC-JD-AFS-CODE` | `JD` | 旧代码 `JdAfsRefundMapper` 读取的售后字段。SRC-03 没有这些字段 | 未提供 | E4 |
 | `SC-MT-DOC-175` | `MEITUAN` | 美团“APP方URL 推送已确认订单”，docDetail/175。HTTP POST form | 未提供 | E1-A |
 | `SC-MT-CALLBACK-CODE` | `MEITUAN` | trade-flow 回调事件 `managedCancelAndConfirmOrder` 及详情归一化后的驼峰字段 | 未提供。尚未证明等于 docDetail/175 | E4 |
 | `SC-TB-MSG-CATALOG` | `TAOBAO_FLASH` | 淘宝闪购订单服务消息目录。不是某一条消息的字段页 | 未提供 | E1-A，仅消息名 |
-| `SC-TB-CODE-SNAPSHOT` | `TAOBAO_FLASH` | 旧代码把详情查询或消息 217 当订单快照时读取的字段 | 未提供。官方目录没有这些字段 | E4 |
-| `SC-TB-CODE-REFUND` | `TAOBAO_FLASH` | 旧代码退款头和退款行 | 未提供 | E4 |
-| `SC-FY-ORDER-EXCERPT` | `FUIOU` | 仓库摘录 `docs/references/fuiou/api.md` 的订单推送字段，加上代码对照 | 未提供。摘录是否现行未证明 | E1-B；只在代码里出现的字段另标 E4 |
-| `SC-FY-PAY-EXCERPT` | `FUIOU` | 支付摘录及 `FuiouPaymentFactMapper` | 未提供。摘录写 Long，未写分 | E1-B 加 E4 |
+| `SC-TB-CODE-DETAIL-QUERY` | `TAOBAO_FLASH` | 旧代码订单详情查询路径。不是官方契约，也不能代表消息 217 | 未提供 | E4 |
+| `SC-TB-CODE-MSG-217` | `TAOBAO_FLASH` | 旧代码把消息 217 也当快照的路径。官方目录只有消息名 | 未提供 | E4 |
+| `SC-TB-CODE-REFUND-HEADER` | `TAOBAO_FLASH` | 旧代码退款头。未证明与退款行是同一契约 | 未提供 | E4 |
+| `SC-TB-CODE-REFUND-ITEM` | `TAOBAO_FLASH` | 旧代码退款行 | 未提供 | E4 |
+| `SC-FY-ORDER-EXCERPT` | `FUIOU` | 仓库摘录 `docs/references/fuiou/api.md` 已经写明的订单推送字段 | 未提供。摘录是否现行未证明 | E1-B |
+| `SC-FY-CODE-ORDER` | `FUIOU` | 只在旧代码中出现、摘录未按字段写明的订单金额名 | 未提供。不是官方契约号 | E4 |
+| `SC-FY-PAY-EXCERPT` | `FUIOU` | 支付摘录已经写明的金额字段 | 未提供。摘录写 Long，未写分 | E1-B |
+| `SC-FY-PAY-CODE` | `FUIOU` | 支付代码另读、摘录未写明的金额名 | 未提供 | E4 |
 | `SC-FY-REFUND-CODE` | `FUIOU` | `FuiouRefundFactMapper` 与退款累计 | 未提供 | E4 |
 | `SC-FY-RECHARGE-CODE` | `FUIOU` | `FuiouRechargeFactMapper` | 未提供 | E4 |
 | `SC-FY-GBV-CODE` | `FUIOU` | 团购核销 JSON。接口摘录没有这八列的单位 | 未提供 | E4；DDL 注释是 E5 |
@@ -109,7 +120,8 @@ AmountSource 至少保留：`platform`、`sourceInterface`、`sourceMessageType`
 | `orderFreightMoney` | `orderFreightMoney` | UNKNOWN | UNKNOWN | 用户实际支付的运费 | UNKNOWN | UNKNOWN | UNKNOWN | E1-B | 待平台确认 | 是运费，不是整单应付，也不是美团那种门店配送费 |
 | `canteenMoney` | `canteenMoney` | UNKNOWN | UNKNOWN | 商品总餐盒费 | UNKNOWN | UNKNOWN | UNKNOWN | E1-B | 待平台确认 | 旧代码汇总后写入包装费。是否采用，AMT-002 未完成 |
 | `packagingMoney` | `packagingMoney` | UNKNOWN | UNKNOWN | 包装金额 | UNKNOWN | UNKNOWN | UNKNOWN | E1-B | 待平台确认 | 旧代码不使用。不映射进现有三个包装码 |
-| `orderGoodsMoney` | `orderGoodsMoney` | UNKNOWN | UNKNOWN | 无官方参考登记。代码注释称优惠后商品金额 | UNKNOWN | UNKNOWN | UNKNOWN | E4 | 待平台确认 | 代码注释里的等式不是契约定义 |
+
+`orderGoodsMoney` 不进入上一张摘录表。06-02-02 只记录旧代码读取它，并写明官方参考未单独登记。本轮不能证明它属于 `SC-JD-QUERY-EXCERPT`。它单独属于代码调查来源 `SC-JD-CODE-DETAIL`：`sourceInterface` 是旧代码订单详情读取，`sourceContractVersion`、`rawDataType`、`rawValueExample`、`documentedUnit`、`documentedCurrency`、`documentedPrecision` 都是 `UNKNOWN`。`documentedDescription` 只有代码注释里的“优惠后商品金额”，不是官方定义。证据保持 E4，语义待平台确认。代码注释中的等式不能升成契约。
 
 售后契约 `SC-JD-AFS-CODE`：
 
@@ -154,19 +166,34 @@ trade-flow 设计文档还出现 `platformPointsDeductionMoney`、`orderReceivab
 
 `SC-TB-MSG-CATALOG` 读到的是消息名。与金额有关、且旧代码登记过的包括 217、12、14、18、30–39、223。217 的页面描述是“订单生效，店铺可以看到新订单”。该页没有 `originalPrice`、`totalAmount`、`totalPrice`、`deliverFee`，也没有类型、单位和示例。其他淘宝业务线文档不能补这个缺口。SRC-001。
 
-下表全部属于 `SC-TB-CODE-SNAPSHOT` 或备注中的退款契约。`sourceSystem` 是淘宝闪购旧代码所读取的报文，不是官方字段页。`sourceInterface` 在快照行是订单详情查询或消息 217，在退款行是退款代码路径。`sourceMessageType` 除 217 的消息名外都未取得。`sourceContractVersion`、`rawDataType`、`rawValueExample`、`documentedDescription`、`documentedUnit`、`documentedCurrency`、`documentedPrecision` 都是 `UNKNOWN` 或“无”。证据都是 E4。语义都是待平台确认。
+详情查询和消息 217 尚未证明是同一契约，因此不再共用 `SC-TB-CODE-SNAPSHOT`。下面每张表的 `sourceContractVersion`、`rawDataType`、`rawValueExample`、`documentedDescription`、`documentedUnit`、`documentedCurrency`、`documentedPrecision` 都是 `UNKNOWN` 或“无”。证据都是 E4，不升成官方字段定义。语义都是待平台确认。
 
-| fieldPath | 契约 | 代码行为 | 不能当成 |
-| --- | --- | --- | --- |
-| `originalPrice` | 快照 | 快照事件写入商品原价列和优惠基数，并做元转分 | 官方订单原价 |
-| `totalAmount` | 快照 | 写入代码里的订单原价列 | 官方总价或 `AMT.ORD.TOTAL` |
-| `totalPrice` | 快照 | 同时写入优惠后金额和 `userPayAmount` | 用户实付 |
-| `deliverFee` | 快照 | 写入配送费 | 门店配送费或用户运费的已确认类型 |
-| `packageFee` | 快照 | 字段在场才转换后写入包装费 | 美团订单打包费 |
-| `totalActivityAmount` | 快照 | 有优惠摘要时取绝对值 | 已确认优惠额。取绝对值不是 V2 规则 |
-| `income` | 仅详情查询 | 写入商家收入列。回调不写，也不用实付代替 | 已确认商家应收或结算额 |
-| `totalPrice` | `SC-TB-CODE-REFUND` 退款头 | 元转分后当退款头金额 | 订单快照上的同名字段 |
-| `money` | 退款行 | 元转分后当行金额 | 用户实退 |
+`SC-TB-CODE-DETAIL-QUERY` 只表示旧代码的订单详情查询路径：
+
+| fieldPath | 代码行为 | 不能当成 |
+| --- | --- | --- |
+| `originalPrice` | 写入商品原价列和优惠基数，并做元转分 | 官方订单原价 |
+| `totalAmount` | 写入代码里的订单原价列 | 官方总价或 `AMT.ORD.TOTAL` |
+| `totalPrice` | 同时写入优惠后金额和 `userPayAmount` | 用户实付 |
+| `deliverFee` | 写入配送费 | 已确认的门店配送费或用户运费 |
+| `packageFee` | 字段在场才转换后写入包装费 | 美团订单打包费 |
+| `totalActivityAmount` | 有优惠摘要时取绝对值 | 已确认优惠额。取绝对值不是 V2 规则 |
+| `income` | 只在详情查询写入商家收入列，不用实付代替 | 已确认商家应收或结算额 |
+
+`SC-TB-CODE-MSG-217` 只表示旧代码把消息 217 当作快照的路径。官方目录没有这些字段，所以不能证明 217 报文里真有这些路径，也不能和详情查询共用 mappingId：
+
+| fieldPath | 代码行为 | 不能当成 |
+| --- | --- | --- |
+| `originalPrice` | 217 被当成快照时，代码会走同一套金额赋值 | 官方已经定义的订单原价 |
+| `totalAmount` | 同上 | 官方总价 |
+| `totalPrice` | 同上，且代码会同时写入两个业务列 | 用户实付 |
+| `deliverFee` | 同上 | 已确认运费类型 |
+| `packageFee` | 同上 | 美团订单打包费 |
+| `totalActivityAmount` | 同上 | 已确认优惠额 |
+
+`income` 不放入 217 这张表。既有记录只把它记在详情查询。
+
+`SC-TB-CODE-REFUND-HEADER` 的 `totalPrice`：代码元转分后当退款头金额。它不是详情查询或 217 上的 `totalPrice`。`SC-TB-CODE-REFUND-ITEM` 的 `money`：代码元转分后当退款行金额。两者都不是用户实退。
 
 优惠代码还读取 `amount`、`restaurantPart`、`elemePart`、`familyPart`、`userPart`。报文路径本轮没有从官方页取得，所以不能写成已经定位的 `fieldPath`。用户承担必须来自活动原文；这条只是代码注释，不是官方定义。
 
@@ -182,9 +209,8 @@ trade-flow 设计文档还出现 `platformPointsDeductionMoney`、`orderReceivab
 | `fullOrderDisAmt` | UNKNOWN | UNKNOWN | 摘录有整单优惠类名称 | UNKNOWN | UNKNOWN | UNKNOWN | E1-B | 待平台确认 | 旧代码禁止把明细再加进订单头 |
 | `packagePriceDisAmt` | UNKNOWN | UNKNOWN | 只有名称，没有正负说明 | UNKNOWN | UNKNOWN | UNKNOWN | E1-B | 待业务确认 | AMT-005。符号必须保留 |
 | `lunchBoxFee` | UNKNOWN | UNKNOWN | 餐盒 | 分 | UNKNOWN | UNKNOWN | E1-B | 待平台确认 | 不映射到美团订单打包费 |
-| `orderAmt` | UNKNOWN | UNKNOWN | 无本轮重读的摘录句子。代码不把它当跨平台原价 | UNKNOWN | UNKNOWN | UNKNOWN | E4 | 待平台确认 | 不映射到 `AMT.ORD.ORIGINAL` |
-| `payAmtExtra` | UNKNOWN | UNKNOWN | R-09 只确认到有该字段，不拆成第二支付行 | UNKNOWN | UNKNOWN | UNKNOWN | E4 | 待业务确认 | PAY-002 |
-| `wipeZeroAmt` | UNKNOWN | UNKNOWN | 代码把抹零承担记到商家。06-03-01 未逐字重开摘录 | UNKNOWN | UNKNOWN | UNKNOWN | E4 | 待业务确认 | 可以是负数只作为旧调查线索，不在此升成规则 |
+
+`orderAmt`、`payAmtExtra`、`wipeZeroAmt` 不放入上一张摘录表。本轮没有摘录字段句证明它们属于 `SC-FY-ORDER-EXCERPT`。它们属于代码调查来源 `SC-FY-CODE-ORDER`，证据保持 E4：`orderAmt` 只知道代码不把它当跨平台原价；`payAmtExtra` 只知道旧代码不拆成第二支付行；`wipeZeroAmt` 只知道代码把抹零承担记到商家。三者的官方描述、单位、币种、精度和示例都是 `UNKNOWN`。负数线索不升成规则。
 
 支付契约 `SC-FY-PAY-EXCERPT`。`sourceContractVersion`、`rawValueExample`、`documentedCurrency`、`documentedPrecision` 都是 `UNKNOWN`。`rawDataType` 只知道摘录写 Long，没有更细的精度。
 
@@ -192,7 +218,8 @@ trade-flow 设计文档还出现 `platformPointsDeductionMoney`、`orderReceivab
 | --- | --- | --- | --- | --- |
 | `payAmt` | 支付摘录写 Long。代码写入 `paidAmount` | UNKNOWN | E1-B | 与订单 `payAmt` 不是同一契约，不能共用映射 |
 | `feeAmt` | 代码写入手续费。摘录未写分 | UNKNOWN | E1-B | PAY-003。不能推断为分 |
-| `faceAmt` | 代码写入支付上的券面额字段 | UNKNOWN | E4 | 不是团购 `faceAmt` |
+
+`faceAmt` 不放入支付摘录表。06-02-05 只记录代码把它写入支付上的券面额字段，本轮没有摘录句子。它属于 `SC-FY-PAY-CODE`，证据保持 E4，单位 `UNKNOWN`，也不是团购 `faceAmt`。
 
 退款契约 `SC-FY-REFUND-CODE` 的 `refundAmt`：代码在已退款状态使用；空则失败。无官方单位。负数在累计代码里会抛错，这是 E4，不是财务规则。
 
@@ -217,18 +244,18 @@ trade-flow 设计文档还出现 `platformPointsDeductionMoney`、`orderReceivab
 
 本节没有“已确认映射”。`mappingVersion` 全部是 `draft-1`。`lifecycleStatus` 全部是 `DRAFT`。`currencyConstraint` 全部是“币种 UNKNOWN，禁止跨币种运算，禁止从单位推断人民币”。`precisionConstraint` 全部是 `NO_IMPLICIT_ROUNDING`。`transformationPolicy` 全部是 `NO_CONVERT`：不换单位、不舍入、不截断、不取绝对值、不把缺失补 0。
 
-`mappingStatus` 的含义：
+矩阵列 `candidateDisposition` 只表示设计评估。它旁边的 `lifecycleStatus` 才是规则生命周期。现在这些规则都是 `DRAFT`，所以都还不能产生 `ObservedAmount.mappingStatus=MAPPED`。
 
-| 值 | 含义 |
-| --- | --- |
-| `CANDIDATE` | 契约用词和某一个类型对得上。规则仍是草稿，不能当生产配置 |
-| `MULTI_CANDIDATE` | 有条件分支或多个来源写法。不选默认值 |
-| `CONFLICT` | 两种解释不能同时变成正式观测 |
-| `UNIDENTIFIED` | 当前只准备保存为 `AMT.UNK.UNIDENTIFIED` |
-| `UNMAPPED` | 该契约不产生这个金额 |
-| `DISALLOWED` | 禁止把字段映射到该类型 |
+| candidateDisposition | 设计含义 | 现在的执行状态 |
+| --- | --- | --- |
+| `SINGLE_CANDIDATE` | 契约用词只对上一个类型 | 规则未生效，不得 `MAPPED` |
+| `MULTI_CANDIDATE` | 有多个类型或多种来源写法，不选默认 | 不得 `MAPPED`。若执行时写成两个正式类型，状态必须是 `CONFLICT` |
+| `HOLD_UNIDENTIFIED` | 先不生成正式业务类型观测 | 对业务类型是 `UNMAPPED`。未识别保存见第 8 节，不是业务映射成功 |
+| `CONFLICTING_CANDIDATES` | 两种解释都不能选 | 不得二选一。执行时状态是 `CONFLICT` |
+| `NO_AMOUNT` | 该契约没有这个金额 | `UNMAPPED` |
+| `BLOCKED_BY_ELIGIBILITY` | 类型资格禁止作为字段目标 | 不建立指向该类型的规则，没有 `MAPPED` |
 
-确认前，凡是目标类型的资格为 `NOT_UNTIL_CONFIRMED` 或 `DISALLOWED` 的，都不得生成该类型的正式观测。字段仍可按第 8 节保存未识别观测。
+目标资格是 `NOT_UNTIL_CONFIRMED` 或 `DISALLOWED` 时，不得生成该业务类型的正式观测。字段仍可按第 8 节保存未识别观测。
 
 ### 5.1 契约用词已经对上、但尚未生效的映射
 
@@ -236,79 +263,108 @@ trade-flow 设计文档还出现 `platformPointsDeductionMoney`、`orderReceivab
 
 这些行的目标资格是 `ALLOWED_IF_CONTRACT_DEFINES`。它们仍不是生产映射。
 
-| mappingId | platform | sourceContractId | sourceContractVersion | fieldPath | candidateAmountTypeCode | mappingStatus | semanticStatus | evidenceStatus | mappingEligibility | aggregationPolicy | confirmationOwner | remarks |
+| mappingId | platform | sourceContractId | sourceContractVersion | fieldPath | candidateAmountTypeCode | candidateDisposition | semanticStatus | evidenceStatus | mappingEligibility | aggregationPolicy | confirmationOwner | remarks |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `MAP-MT-ORIGINAL-PRICE` | `MEITUAN` | `SC-MT-DOC-175` | 未提供 | `original_price` | `AMT.ORD.ORIGINAL` | `CANDIDATE` | 部分确认 | E1-A | `ALLOWED_IF_CONTRACT_DEFINES` | `FORBIDDEN` | 平台官方文档 | 含急送费。单位未写，禁止按示例小数当成元并转换 |
-| `MAP-MT-TOTAL` | `MEITUAN` | `SC-MT-DOC-175` | 未提供 | `total` | `AMT.ORD.TOTAL` | `CANDIDATE` | 部分确认；实付解释存在冲突 | E1-A | `ALLOWED_IF_CONTRACT_DEFINES` | `FORBIDDEN` | 平台官方文档；业务负责人否决实付解释 | 只接受“总价”这个词。禁止第二观测 `AMT.USR.PAID` |
-| `MAP-MT-SHIPPING` | `MEITUAN` | `SC-MT-DOC-175` | 未提供 | `shipping_fee` | `AMT.FEE.STORE_DELIVERY` | `CANDIDATE` | 部分确认 | E1-A | `ALLOWED_IF_CONTRACT_DEFINES` | `FORBIDDEN` | 平台官方文档 | 不包含 `phf_ssf` 的第二次加计 |
-| `MAP-MT-RECEIVE` | `MEITUAN` | `SC-MT-DOC-175` | 未提供 | `wmPoiReceiveCent` | `AMT.MCH.RECEIVABLE` | `CANDIDATE` | 部分确认 | E1-A | `ALLOWED_IF_CONTRACT_DEFINES` | `FORBIDDEN` | 平台官方文档；财务负责人确认它不是结算额 | 可空。缺失不用 `total` 填充。单位按页面写成分，币种仍未知 |
+| `MAP-MT-ORIGINAL-PRICE` | `MEITUAN` | `SC-MT-DOC-175` | 未提供 | `original_price` | `AMT.ORD.ORIGINAL` | `SINGLE_CANDIDATE` | 部分确认 | E1-A | `ALLOWED_IF_CONTRACT_DEFINES` | `FORBIDDEN` | 平台官方文档 | 含急送费。单位未写，禁止按示例小数当成元并转换 |
+| `MAP-MT-TOTAL` | `MEITUAN` | `SC-MT-DOC-175` | 未提供 | `total` | `AMT.ORD.TOTAL` | `SINGLE_CANDIDATE` | 部分确认；实付解释存在冲突 | E1-A | `ALLOWED_IF_CONTRACT_DEFINES` | `FORBIDDEN` | 平台官方文档；业务负责人否决实付解释 | 只接受“总价”这个词。禁止第二观测 `AMT.USR.PAID` |
+| `MAP-MT-SHIPPING` | `MEITUAN` | `SC-MT-DOC-175` | 未提供 | `shipping_fee` | `AMT.FEE.STORE_DELIVERY` | `SINGLE_CANDIDATE` | 部分确认 | E1-A | `ALLOWED_IF_CONTRACT_DEFINES` | `FORBIDDEN` | 平台官方文档 | 不包含 `phf_ssf` 的第二次加计 |
+| `MAP-MT-RECEIVE` | `MEITUAN` | `SC-MT-DOC-175` | 未提供 | `wmPoiReceiveCent` | `AMT.MCH.RECEIVABLE` | `SINGLE_CANDIDATE` | 部分确认 | E1-A | `ALLOWED_IF_CONTRACT_DEFINES` | `FORBIDDEN` | 平台官方文档；财务负责人确认它不是结算额 | 可空。缺失不用 `total` 填充。单位按页面写成分，币种仍未知 |
 | `MAP-MT-BAG-FEN` | `MEITUAN` | `SC-MT-DOC-175` | 未提供 | `package_bag_money` | `AMT.FEE.PACKAGE_BAG` | `MULTI_CANDIDATE` | 部分确认 | E1-A | `ALLOWED_IF_CONTRACT_DEFINES` | `FORBIDDEN` | 数据平台研发负责人选择来源写法 | 与元字符串二选一，不能相加 |
 | `MAP-MT-BAG-YUAN` | `MEITUAN` | `SC-MT-DOC-175` | 未提供 | `package_bag_money_yuan` | `AMT.FEE.PACKAGE_BAG` | `MULTI_CANDIDATE` | 部分确认 | E1-A | `ALLOWED_IF_CONTRACT_DEFINES` | `FORBIDDEN` | 同上 | 字符串要先按契约允许的 `NUMERIC_TEXT` 解析。本规则未批准解析 |
 
-`package_bag_fee` 不放进上一表。页面既写订单维度打包费，又写 mode=0 时等于商品餐盒费总额。候选是 `AMT.FEE.PACKAGE_ORDER` 与 `AMT.FEE.PACKAGE_ITEM`，状态 `MULTI_CANDIDATE`。mappingId 为 `MAP-MT-BAG-FEE`。确认前不选择，也不用商品行覆盖。
+`MAP-MT-BAG-FEE` 是一条完整的设计记录，不选择默认类型，也不新增计算规则：
+
+| 属性 | 值 |
+| --- | --- |
+| mappingId | `MAP-MT-BAG-FEE` |
+| mappingVersion | `draft-1` |
+| platform | `MEITUAN` |
+| sourceContractId | `SC-MT-DOC-175` |
+| sourceContractVersion | 未提供 |
+| fieldPath | `package_bag_fee` |
+| candidateAmountTypeCode | `AMT.FEE.PACKAGE_ORDER` 与 `AMT.FEE.PACKAGE_ITEM` |
+| candidateDisposition | `MULTI_CANDIDATE` |
+| lifecycleStatus | `DRAFT` |
+| mappingEligibility | `AMT.FEE.PACKAGE_ORDER` 为 `ALLOWED_IF_CONTRACT_DEFINES`；`AMT.FEE.PACKAGE_ITEM` 为 `NOT_UNTIL_CONFIRMED` |
+| unitConstraint | 页面写明单位元，只记录该声明，不换算 |
+| currencyConstraint | 币种 `UNKNOWN`，禁止推断人民币，禁止跨币种运算 |
+| precisionConstraint | `NO_IMPLICIT_ROUNDING` |
+| transformationPolicy | `NO_CONVERT` |
+| aggregationPolicy | 两个候选类型都是 `FORBIDDEN` |
+| evidenceStatus | E1-A |
+| semanticStatus | 部分确认。mode=0 时页面又把它说成商品餐盒费总额，因此不能只保留一种解释 |
+| evidenceReference | SRC-02 字段行及打包费模式说明 |
+| confirmationOwner | 平台官方文档；业务负责人 |
+| remarks | 有该字段时不得用商品行覆盖。确认前不选择默认类型。规则未生效，不得产生 `MAPPED`。若执行时同时写成两个正式类型，ObservedAmount.mappingStatus 为 `CONFLICT` |
 
 ### 5.2 只登记候选、确认前保持未识别
 
 本表每一行若没有单独列出，则共用这些值：`mappingVersion` 为 `draft-1`；`sourceContractVersion` 为“未提供”；`lifecycleStatus` 为 `DRAFT`；`semanticStatus` 和 `evidenceStatus` 以第 4 节同一字段行为准；`evidenceReference` 指向第 4 节该行，以及 R-09、SRC 或 R-07 的对应段落；`unitConstraint` 为不转换；`currencyConstraint` 为币种 `UNKNOWN`；`precisionConstraint` 为 `NO_IMPLICIT_ROUNDING`；`transformationPolicy` 为 `NO_CONVERT`。
 
-| mappingId | platform | sourceContractId | fieldPath | candidateAmountTypeCode | mappingStatus | mappingEligibility | aggregationPolicy | confirmationOwner | remarks |
+| mappingId | platform | sourceContractId | fieldPath | candidateAmountTypeCode | candidateDisposition | mappingEligibility | aggregationPolicy | confirmationOwner | remarks |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `MAP-JD-SALE-TOTAL` | `JD` | `SC-JD-QUERY-EXCERPT` | `orderTotalMoney` | `AMT.ORD.SALE_TOTAL` | `UNIDENTIFIED` | `NOT_UNTIL_CONFIRMED` | `FORBIDDEN` | 平台技术支持 | SRC-002 关闭前不映射。禁止改指向 `AMT.ORD.ORIGINAL` |
-| `MAP-JD-PAYABLE` | `JD` | `SC-JD-QUERY-EXCERPT` | `orderBuyerPayableMoney` | `AMT.USR.PAYABLE` | `UNIDENTIFIED` | `NOT_UNTIL_CONFIRMED` | `FORBIDDEN` | 平台技术支持；业务负责人 | 禁止指向 `AMT.USR.PAID` 和 `AMT.PAY.SUCCESS` |
-| `MAP-JD-DISCOUNT` | `JD` | `SC-JD-QUERY-EXCERPT` | `orderDiscountMoney` | `AMT.ORD.DISCOUNT_ORDER` | `UNIDENTIFIED` | `NOT_UNTIL_CONFIRMED` | `FORBIDDEN` | 平台技术支持 | 不含单品和运费优惠，不能当成全部优惠 |
-| `MAP-JD-FREIGHT` | `JD` | `SC-JD-QUERY-EXCERPT` | `orderFreightMoney` | `AMT.FEE.USER_FREIGHT` | `UNIDENTIFIED` | `NOT_UNTIL_CONFIRMED` | `FORBIDDEN` | 平台技术支持 | 禁止先映射到 `AMT.FEE.STORE_DELIVERY` |
-| `MAP-JD-CANTEEN` | `JD` | `SC-JD-QUERY-EXCERPT` | `canteenMoney` | `AMT.FEE.PACKAGE_ITEM` | `UNIDENTIFIED` | `NOT_UNTIL_CONFIRMED` | `FORBIDDEN` | 平台技术支持；业务负责人 | 与 `packagingMoney` 不能合成一个码 |
-| `MAP-JD-PACKAGING` | `JD` | `SC-JD-QUERY-EXCERPT` | `packagingMoney` | 无正式候选 | `UNIDENTIFIED` | `ALLOWED_AS_UNIDENTIFIED` | `FORBIDDEN` | 平台技术支持 | 不进入三个包装码 |
-| `MAP-JD-GOODS-MONEY` | `JD` | `SC-JD-QUERY-EXCERPT` | `orderGoodsMoney` | `AMT.ORD.AFTER_DISCOUNT` | `UNIDENTIFIED` | `NOT_UNTIL_CONFIRMED` | `FORBIDDEN` | 平台技术支持 | 官方参考未登记 |
-| `MAP-JD-AFS-ROOT` | `JD` | `SC-JD-AFS-CODE` | `refundUserMmoney` | `AMT.RFD.DOCUMENT` | `UNIDENTIFIED` | `NOT_UNTIL_CONFIRMED` | `FORBIDDEN` | 平台技术支持；财务负责人 | 禁止截断。禁止指向成功合计和实退 |
+| `MAP-JD-SALE-TOTAL` | `JD` | `SC-JD-QUERY-EXCERPT` | `orderTotalMoney` | `AMT.ORD.SALE_TOTAL` | `HOLD_UNIDENTIFIED` | `NOT_UNTIL_CONFIRMED` | `FORBIDDEN` | 平台技术支持 | SRC-002 关闭前不映射。禁止改指向 `AMT.ORD.ORIGINAL` |
+| `MAP-JD-PAYABLE` | `JD` | `SC-JD-QUERY-EXCERPT` | `orderBuyerPayableMoney` | `AMT.USR.PAYABLE` | `HOLD_UNIDENTIFIED` | `NOT_UNTIL_CONFIRMED` | `FORBIDDEN` | 平台技术支持；业务负责人 | 禁止指向 `AMT.USR.PAID` 和 `AMT.PAY.SUCCESS` |
+| `MAP-JD-DISCOUNT` | `JD` | `SC-JD-QUERY-EXCERPT` | `orderDiscountMoney` | `AMT.ORD.DISCOUNT_ORDER` | `HOLD_UNIDENTIFIED` | `NOT_UNTIL_CONFIRMED` | `FORBIDDEN` | 平台技术支持 | 不含单品和运费优惠，不能当成全部优惠 |
+| `MAP-JD-FREIGHT` | `JD` | `SC-JD-QUERY-EXCERPT` | `orderFreightMoney` | `AMT.FEE.USER_FREIGHT` | `HOLD_UNIDENTIFIED` | `NOT_UNTIL_CONFIRMED` | `FORBIDDEN` | 平台技术支持 | 禁止先映射到 `AMT.FEE.STORE_DELIVERY` |
+| `MAP-JD-CANTEEN` | `JD` | `SC-JD-QUERY-EXCERPT` | `canteenMoney` | `AMT.FEE.PACKAGE_ITEM` | `HOLD_UNIDENTIFIED` | `NOT_UNTIL_CONFIRMED` | `FORBIDDEN` | 平台技术支持；业务负责人 | 与 `packagingMoney` 不能合成一个码 |
+| `MAP-JD-PACKAGING` | `JD` | `SC-JD-QUERY-EXCERPT` | `packagingMoney` | 无正式候选 | `HOLD_UNIDENTIFIED` | `ALLOWED_AS_UNIDENTIFIED` | `FORBIDDEN` | 平台技术支持 | 不进入三个包装码 |
+| `MAP-JD-GOODS-MONEY` | `JD` | `SC-JD-CODE-DETAIL` | `orderGoodsMoney` | `AMT.ORD.AFTER_DISCOUNT` | `HOLD_UNIDENTIFIED` | `NOT_UNTIL_CONFIRMED` | `FORBIDDEN` | 平台技术支持 | 官方参考未登记 |
+| `MAP-JD-AFS-ROOT` | `JD` | `SC-JD-AFS-CODE` | `refundUserMmoney` | `AMT.RFD.DOCUMENT` | `HOLD_UNIDENTIFIED` | `NOT_UNTIL_CONFIRMED` | `FORBIDDEN` | 平台技术支持；财务负责人 | 禁止截断。禁止指向成功合计和实退 |
 | `MAP-JD-AFS-CASH` | `JD` | `SC-JD-AFS-CODE` | `cashMoney` | `AMT.RFD.DOCUMENT` | `MULTI_CANDIDATE` | `NOT_UNTIL_CONFIRMED` | `FORBIDDEN` | 平台技术支持 | 与根金额是不是同一语义，尚未证明 |
-| `MAP-MT-PHF` | `MEITUAN` | `SC-MT-DOC-175` | `phf_ssf` | `AMT.UNK.UNIDENTIFIED` | `UNIDENTIFIED` | `ALLOWED_AS_UNIDENTIFIED` | `FORBIDDEN` | 平台官方文档 | 禁止加进 `AMT.FEE.STORE_DELIVERY` |
-| `MAP-MT-POI-DETAIL` | `MEITUAN` | `SC-MT-DOC-175` | `poi_receive_detail` | `AMT.UNK.UNIDENTIFIED` | `UNIDENTIFIED` | `ALLOWED_AS_UNIDENTIFIED` | `FORBIDDEN` | 平台官方文档 | 非标量。内部字段未展开前不计算 |
-| `MAP-MT-POI-DETAIL-YUAN` | `MEITUAN` | `SC-MT-DOC-175` | `poi_receive_detail_yuan` | `AMT.UNK.UNIDENTIFIED` | `UNIDENTIFIED` | `ALLOWED_AS_UNIDENTIFIED` | `FORBIDDEN` | 平台官方文档 | 同上。不与分对象相加 |
-| `MAP-MT-EXTRAS` | `MEITUAN` | `SC-MT-DOC-175` | `extras` | `AMT.UNK.UNIDENTIFIED` | `UNIDENTIFIED` | `ALLOWED_AS_UNIDENTIFIED` | `FORBIDDEN` | 平台官方文档 | 数组不参与计算 |
-| `MAP-MT-REDUCE` | `MEITUAN` | `SC-MT-DOC-175` | `extras[].reduce_fee` | `AMT.ORD.DISCOUNT_DETAIL` | `UNIDENTIFIED` | `NOT_UNTIL_CONFIRMED` | `RULE_CONTROLLED` | 平台官方文档 | 无生效规则，现在不能加总，也不能写入订单级优惠 |
-| `MAP-MT-POI-CHARGE` | `MEITUAN` | `SC-MT-DOC-175` | `extras[].poi_charge` | `AMT.DSC.MERCHANT_BEAR` | `UNIDENTIFIED` | `NOT_UNTIL_CONFIRMED` | `FORBIDDEN` | 业务负责人 | 负值变 0 是旧代码，不是本映射 |
-| `MAP-MT-MT-CHARGE` | `MEITUAN` | `SC-MT-DOC-175` | `extras[].mt_charge` | `AMT.DSC.PLATFORM_BEAR` | `UNIDENTIFIED` | `NOT_UNTIL_CONFIRMED` | `FORBIDDEN` | 业务负责人 | 不是 `AMT.PLT.SUBSIDY` |
-| `MAP-MT-RIDER` | `MEITUAN` | `SC-MT-DOC-175` | `extras[].rider_fee` | `AMT.UNK.UNIDENTIFIED` | `UNIDENTIFIED` | `ALLOWED_AS_UNIDENTIFIED` | `FORBIDDEN` | 平台官方文档 | 不是优惠额 |
-| `MAP-MT-PREPAY` | `MEITUAN` | `SC-MT-DOC-175` | `consumer_prepays` | `AMT.UNK.UNIDENTIFIED` | `UNIDENTIFIED` | `ALLOWED_AS_UNIDENTIFIED` | `FORBIDDEN` | 平台官方文档 | 无公式。禁止直接参与计算 |
-| `MAP-MT-CALLBACK` | `MEITUAN` | `SC-MT-CALLBACK-CODE` | 驼峰金额路径 | `AMT.UNK.UNIDENTIFIED` | `UNIDENTIFIED` | `ALLOWED_AS_UNIDENTIFIED` | `FORBIDDEN` | 平台技术支持 | 未证明与 docDetail/175 同一契约 |
-| `MAP-TB-SNAPSHOT` | `TAOBAO_FLASH` | `SC-TB-CODE-SNAPSHOT` | 第 4.4 节各金额路径 | `AMT.UNK.UNIDENTIFIED` | `UNIDENTIFIED` | `ALLOWED_AS_UNIDENTIFIED` | `FORBIDDEN` | 平台技术支持 | 官方结构未取得。禁止使用其他淘宝业务线文档 |
-| `MAP-TB-TOTAL-PRICE` | `TAOBAO_FLASH` | `SC-TB-CODE-SNAPSHOT` | `totalPrice` | 无 | `CONFLICT` | `NOT_UNTIL_CONFIRMED` | `FORBIDDEN` | 平台技术支持；业务负责人 | 旧代码把它同时当优惠后金额和实付。不选择 |
-| `MAP-TB-REFUND` | `TAOBAO_FLASH` | `SC-TB-CODE-REFUND` | `totalPrice`、`money` | `AMT.RFD.DOCUMENT` | `UNIDENTIFIED` | `NOT_UNTIL_CONFIRMED` | `FORBIDDEN` | 平台技术支持；财务负责人 | 与订单 `totalPrice` 分开 |
-| `MAP-FY-ORDER-DIS` | `FUIOU` | `SC-FY-ORDER-EXCERPT` | `orderDisAmt` | 无正式候选 | `UNIDENTIFIED` | `ALLOWED_AS_UNIDENTIFIED` | `FORBIDDEN` | 平台技术支持 | 不映射到订单原价 |
-| `MAP-FY-PAY` | `FUIOU` | `SC-FY-ORDER-EXCERPT` | `payAmt` | `AMT.USR.PAID` | `UNIDENTIFIED` | `NOT_UNTIL_CONFIRMED` | `FORBIDDEN` | 业务负责人 | 禁止生效。也禁止指向支付成功合计 |
-| `MAP-FY-EXPRESS` | `FUIOU` | `SC-FY-ORDER-EXCERPT` | `expressAmt` | `AMT.FEE.STORE_DELIVERY` 与 `AMT.FEE.USER_FREIGHT` | `CONFLICT` | `NOT_UNTIL_CONFIRMED` | `FORBIDDEN` | 平台技术支持 | 两种费用都不选 |
-| `MAP-FY-FULL-DIS` | `FUIOU` | `SC-FY-ORDER-EXCERPT` | `fullOrderDisAmt` | `AMT.ORD.DISCOUNT_ORDER` | `UNIDENTIFIED` | `NOT_UNTIL_CONFIRMED` | `FORBIDDEN` | 平台技术支持 | 禁止把明细加进此字段 |
-| `MAP-FY-PKG-DIS` | `FUIOU` | `SC-FY-ORDER-EXCERPT` | `packagePriceDisAmt` | `AMT.UNK.UNIDENTIFIED` | `UNIDENTIFIED` | `ALLOWED_AS_UNIDENTIFIED` | `FORBIDDEN` | 业务负责人 | 保留符号。不进入经营成交额 |
-| `MAP-FY-LUNCH` | `FUIOU` | `SC-FY-ORDER-EXCERPT` | `lunchBoxFee` | `AMT.FEE.PACKAGE_ITEM` | `UNIDENTIFIED` | `NOT_UNTIL_CONFIRMED` | `FORBIDDEN` | 平台技术支持 | 单位虽摘录为分，币种仍未知 |
-| `MAP-FY-FEE` | `FUIOU` | `SC-FY-PAY-EXCERPT` | `feeAmt` | `AMT.FEE.PAYMENT` | `UNIDENTIFIED` | `NOT_UNTIL_CONFIRMED` | `FORBIDDEN` | 财务负责人 | 单位未知，禁止换成元或分 |
-| `MAP-FY-PAY-FACE` | `FUIOU` | `SC-FY-PAY-EXCERPT` | `faceAmt` | `AMT.UNK.UNIDENTIFIED` | `UNIDENTIFIED` | `ALLOWED_AS_UNIDENTIFIED` | `FORBIDDEN` | 平台技术支持 | 不指向团购面值 |
-| `MAP-FY-REFUND` | `FUIOU` | `SC-FY-REFUND-CODE` | `refundAmt` | `AMT.RFD.DOCUMENT` | `UNIDENTIFIED` | `NOT_UNTIL_CONFIRMED` | `FORBIDDEN` | 财务负责人 | 不指向退款成功合计 |
-| `MAP-FY-RCG-PAY` | `FUIOU` | `SC-FY-RECHARGE-CODE` | `payAmt` | `AMT.RCG.PRINCIPAL` | `UNIDENTIFIED` | `NOT_UNTIL_CONFIRMED` | `FORBIDDEN` | 业务负责人 | 禁止取绝对值。不进入订单成交额 |
-| `MAP-FY-RCG-GIFT` | `FUIOU` | `SC-FY-RECHARGE-CODE` | `giveAmt` | `AMT.RCG.GIFT` | `UNIDENTIFIED` | `NOT_UNTIL_CONFIRMED` | `FORBIDDEN` | 业务负责人 | 与本金分开 |
-| `MAP-FY-GBV-BUY` | `FUIOU` | `SC-FY-GBV-CODE` | `buyPriceAmt` | `AMT.GBV.BUY_PRICE` | `UNIDENTIFIED` | `NOT_UNTIL_CONFIRMED` | `FORBIDDEN` | 平台技术支持 | 不换算，不进入订单类型 |
-| `MAP-FY-GBV-COUPON` | `FUIOU` | `SC-FY-GBV-CODE` | `couponAmt` | `AMT.GBV.COUPON` | `UNIDENTIFIED` | `NOT_UNTIL_CONFIRMED` | `FORBIDDEN` | 平台技术支持 | DDL 注释不是单位证明 |
-| `MAP-FY-GBV-FACE` | `FUIOU` | `SC-FY-GBV-CODE` | `faceAmt` | `AMT.GBV.FACE` | `UNIDENTIFIED` | `NOT_UNTIL_CONFIRMED` | `FORBIDDEN` | 平台技术支持 | 不与实际抵扣合并 |
-| `MAP-FY-GBV-FACE-VALUE` | `FUIOU` | `SC-FY-GBV-CODE` | `faceValue` | `AMT.GBV.FACE_VALUE` | `UNIDENTIFIED` | `NOT_UNTIL_CONFIRMED` | `FORBIDDEN` | 平台技术支持 | 第八列。不换算 |
-| `MAP-FY-GBV-HB` | `FUIOU` | `SC-FY-GBV-CODE` | `platHongBao` | `AMT.GBV.PLAT_HONGBAO` | `UNIDENTIFIED` | `NOT_UNTIL_CONFIRMED` | `FORBIDDEN` | 平台技术支持 | 不是订单平台承担优惠 |
-| `MAP-FY-GBV-INCOME` | `FUIOU` | `SC-FY-GBV-CODE` | `mchntIncome` | `AMT.GBV.MCHNT_INCOME` | `UNIDENTIFIED` | `NOT_UNTIL_CONFIRMED` | `FORBIDDEN` | 平台技术支持；财务负责人 | 不是商家应收，也不是结算额 |
-| `MAP-FY-GBV-THIRD-INCOME` | `FUIOU` | `SC-FY-GBV-CODE` | `thirdMchntIncome` | `AMT.GBV.THIRD_MCHNT_INCOME` | `UNIDENTIFIED` | `NOT_UNTIL_CONFIRMED` | `FORBIDDEN` | 平台技术支持 | 不与上一列相加 |
-| `MAP-FY-GBV-FEE` | `FUIOU` | `SC-FY-GBV-CODE` | `thirdServiceFee` | `AMT.GBV.THIRD_SERVICE_FEE` | `UNIDENTIFIED` | `NOT_UNTIL_CONFIRMED` | `FORBIDDEN` | 平台技术支持 | 不从收入列扣，也不是春节服务费 |
+| `MAP-MT-PHF` | `MEITUAN` | `SC-MT-DOC-175` | `phf_ssf` | `AMT.UNK.UNIDENTIFIED` | `HOLD_UNIDENTIFIED` | `ALLOWED_AS_UNIDENTIFIED` | `FORBIDDEN` | 平台官方文档 | 禁止加进 `AMT.FEE.STORE_DELIVERY` |
+| `MAP-MT-POI-DETAIL` | `MEITUAN` | `SC-MT-DOC-175` | `poi_receive_detail` | `AMT.UNK.UNIDENTIFIED` | `HOLD_UNIDENTIFIED` | `ALLOWED_AS_UNIDENTIFIED` | `FORBIDDEN` | 平台官方文档 | 非标量。内部字段未展开前不计算 |
+| `MAP-MT-POI-DETAIL-YUAN` | `MEITUAN` | `SC-MT-DOC-175` | `poi_receive_detail_yuan` | `AMT.UNK.UNIDENTIFIED` | `HOLD_UNIDENTIFIED` | `ALLOWED_AS_UNIDENTIFIED` | `FORBIDDEN` | 平台官方文档 | 同上。不与分对象相加 |
+| `MAP-MT-EXTRAS` | `MEITUAN` | `SC-MT-DOC-175` | `extras` | `AMT.UNK.UNIDENTIFIED` | `HOLD_UNIDENTIFIED` | `ALLOWED_AS_UNIDENTIFIED` | `FORBIDDEN` | 平台官方文档 | 数组不参与计算 |
+| `MAP-MT-REDUCE` | `MEITUAN` | `SC-MT-DOC-175` | `extras[].reduce_fee` | `AMT.ORD.DISCOUNT_DETAIL` | `HOLD_UNIDENTIFIED` | `NOT_UNTIL_CONFIRMED` | `RULE_CONTROLLED` | 平台官方文档 | 无生效规则，现在不能加总，也不能写入订单级优惠 |
+| `MAP-MT-POI-CHARGE` | `MEITUAN` | `SC-MT-DOC-175` | `extras[].poi_charge` | `AMT.DSC.MERCHANT_BEAR` | `HOLD_UNIDENTIFIED` | `NOT_UNTIL_CONFIRMED` | `FORBIDDEN` | 业务负责人 | 负值变 0 是旧代码，不是本映射 |
+| `MAP-MT-MT-CHARGE` | `MEITUAN` | `SC-MT-DOC-175` | `extras[].mt_charge` | `AMT.DSC.PLATFORM_BEAR` | `HOLD_UNIDENTIFIED` | `NOT_UNTIL_CONFIRMED` | `FORBIDDEN` | 业务负责人 | 不是 `AMT.PLT.SUBSIDY` |
+| `MAP-MT-RIDER` | `MEITUAN` | `SC-MT-DOC-175` | `extras[].rider_fee` | `AMT.UNK.UNIDENTIFIED` | `HOLD_UNIDENTIFIED` | `ALLOWED_AS_UNIDENTIFIED` | `FORBIDDEN` | 平台官方文档 | 不是优惠额 |
+| `MAP-MT-PREPAY` | `MEITUAN` | `SC-MT-DOC-175` | `consumer_prepays` | `AMT.UNK.UNIDENTIFIED` | `HOLD_UNIDENTIFIED` | `ALLOWED_AS_UNIDENTIFIED` | `FORBIDDEN` | 平台官方文档 | 无公式。禁止直接参与计算 |
+| `MAP-MT-CALLBACK` | `MEITUAN` | `SC-MT-CALLBACK-CODE` | 驼峰金额路径 | `AMT.UNK.UNIDENTIFIED` | `HOLD_UNIDENTIFIED` | `ALLOWED_AS_UNIDENTIFIED` | `FORBIDDEN` | 平台技术支持 | 未证明与 docDetail/175 同一契约 |
+| `MAP-TB-DETAIL-FIELDS` | `TAOBAO_FLASH` | `SC-TB-CODE-DETAIL-QUERY` | 详情查询各金额路径，不含已单独列出的 `totalPrice` | `AMT.UNK.UNIDENTIFIED` | `HOLD_UNIDENTIFIED` | `ALLOWED_AS_UNIDENTIFIED` | `FORBIDDEN` | 平台技术支持 | 官方结构未取得。不与消息 217 共用映射 |
+| `MAP-TB-DETAIL-TOTAL-PRICE` | `TAOBAO_FLASH` | `SC-TB-CODE-DETAIL-QUERY` | `totalPrice` | 无 | `CONFLICTING_CANDIDATES` | `NOT_UNTIL_CONFIRMED` | `FORBIDDEN` | 平台技术支持；业务负责人 | 旧代码把它同时当优惠后金额和实付。不选择 |
+| `MAP-TB-MSG217-FIELDS` | `TAOBAO_FLASH` | `SC-TB-CODE-MSG-217` | 代码在 217 分支读取的金额名，不含 `totalPrice` 和 `income` | `AMT.UNK.UNIDENTIFIED` | `HOLD_UNIDENTIFIED` | `ALLOWED_AS_UNIDENTIFIED` | `FORBIDDEN` | 平台技术支持 | 官方目录没有这些字段。不与详情查询共用映射 |
+| `MAP-TB-MSG217-TOTAL-PRICE` | `TAOBAO_FLASH` | `SC-TB-CODE-MSG-217` | `totalPrice` | 无 | `CONFLICTING_CANDIDATES` | `NOT_UNTIL_CONFIRMED` | `FORBIDDEN` | 平台技术支持；业务负责人 | 与详情查询的同名路径分开。不选择实付 |
+| `MAP-TB-REFUND-HEADER` | `TAOBAO_FLASH` | `SC-TB-CODE-REFUND-HEADER` | `totalPrice` | `AMT.RFD.DOCUMENT` | `HOLD_UNIDENTIFIED` | `NOT_UNTIL_CONFIRMED` | `FORBIDDEN` | 平台技术支持；财务负责人 | 不是订单上的 `totalPrice` |
+| `MAP-TB-REFUND-ITEM` | `TAOBAO_FLASH` | `SC-TB-CODE-REFUND-ITEM` | `money` | `AMT.RFD.DOCUMENT` | `HOLD_UNIDENTIFIED` | `NOT_UNTIL_CONFIRMED` | `FORBIDDEN` | 平台技术支持；财务负责人 | 不与退款头合成一条映射 |
+| `MAP-FY-ORDER-DIS` | `FUIOU` | `SC-FY-ORDER-EXCERPT` | `orderDisAmt` | 无正式候选 | `HOLD_UNIDENTIFIED` | `ALLOWED_AS_UNIDENTIFIED` | `FORBIDDEN` | 平台技术支持 | 不映射到订单原价 |
+| `MAP-FY-PAY` | `FUIOU` | `SC-FY-ORDER-EXCERPT` | `payAmt` | `AMT.USR.PAID` | `HOLD_UNIDENTIFIED` | `NOT_UNTIL_CONFIRMED` | `FORBIDDEN` | 业务负责人 | 禁止生效。也禁止指向支付成功合计 |
+| `MAP-FY-EXPRESS` | `FUIOU` | `SC-FY-ORDER-EXCERPT` | `expressAmt` | `AMT.FEE.STORE_DELIVERY` 与 `AMT.FEE.USER_FREIGHT` | `CONFLICTING_CANDIDATES` | `NOT_UNTIL_CONFIRMED` | `FORBIDDEN` | 平台技术支持 | 两种费用都不选 |
+| `MAP-FY-FULL-DIS` | `FUIOU` | `SC-FY-ORDER-EXCERPT` | `fullOrderDisAmt` | `AMT.ORD.DISCOUNT_ORDER` | `HOLD_UNIDENTIFIED` | `NOT_UNTIL_CONFIRMED` | `FORBIDDEN` | 平台技术支持 | 禁止把明细加进此字段 |
+| `MAP-FY-PKG-DIS` | `FUIOU` | `SC-FY-ORDER-EXCERPT` | `packagePriceDisAmt` | `AMT.UNK.UNIDENTIFIED` | `HOLD_UNIDENTIFIED` | `ALLOWED_AS_UNIDENTIFIED` | `FORBIDDEN` | 业务负责人 | 保留符号。不进入经营成交额 |
+| `MAP-FY-LUNCH` | `FUIOU` | `SC-FY-ORDER-EXCERPT` | `lunchBoxFee` | `AMT.FEE.PACKAGE_ITEM` | `HOLD_UNIDENTIFIED` | `NOT_UNTIL_CONFIRMED` | `FORBIDDEN` | 平台技术支持 | 单位虽摘录为分，币种仍未知 |
+| `MAP-FY-FEE` | `FUIOU` | `SC-FY-PAY-EXCERPT` | `feeAmt` | `AMT.FEE.PAYMENT` | `HOLD_UNIDENTIFIED` | `NOT_UNTIL_CONFIRMED` | `FORBIDDEN` | 财务负责人 | 单位未知，禁止换成元或分 |
+| `MAP-FY-ORDER-AMT` | `FUIOU` | `SC-FY-CODE-ORDER` | `orderAmt` | 无正式候选 | `HOLD_UNIDENTIFIED` | `ALLOWED_AS_UNIDENTIFIED` | `FORBIDDEN` | 平台技术支持 | 摘录未证明该字段。不映射到订单原价 |
+| `MAP-FY-PAY-EXTRA` | `FUIOU` | `SC-FY-CODE-ORDER` | `payAmtExtra` | `AMT.UNK.UNIDENTIFIED` | `HOLD_UNIDENTIFIED` | `ALLOWED_AS_UNIDENTIFIED` | `FORBIDDEN` | 业务负责人 | 不拆成第二支付行。PAY-002 |
+| `MAP-FY-WIPE` | `FUIOU` | `SC-FY-CODE-ORDER` | `wipeZeroAmt` | `AMT.UNK.UNIDENTIFIED` | `HOLD_UNIDENTIFIED` | `ALLOWED_AS_UNIDENTIFIED` | `FORBIDDEN` | 业务负责人 | 只作为代码线索。不取绝对值 |
+| `MAP-FY-PAY-FACE` | `FUIOU` | `SC-FY-PAY-CODE` | `faceAmt` | `AMT.UNK.UNIDENTIFIED` | `HOLD_UNIDENTIFIED` | `ALLOWED_AS_UNIDENTIFIED` | `FORBIDDEN` | 平台技术支持 | 不指向团购面值 |
+| `MAP-FY-REFUND` | `FUIOU` | `SC-FY-REFUND-CODE` | `refundAmt` | `AMT.RFD.DOCUMENT` | `HOLD_UNIDENTIFIED` | `NOT_UNTIL_CONFIRMED` | `FORBIDDEN` | 财务负责人 | 不指向退款成功合计 |
+| `MAP-FY-RCG-PAY` | `FUIOU` | `SC-FY-RECHARGE-CODE` | `payAmt` | `AMT.RCG.PRINCIPAL` | `HOLD_UNIDENTIFIED` | `NOT_UNTIL_CONFIRMED` | `FORBIDDEN` | 业务负责人 | 禁止取绝对值。不进入订单成交额 |
+| `MAP-FY-RCG-GIFT` | `FUIOU` | `SC-FY-RECHARGE-CODE` | `giveAmt` | `AMT.RCG.GIFT` | `HOLD_UNIDENTIFIED` | `NOT_UNTIL_CONFIRMED` | `FORBIDDEN` | 业务负责人 | 与本金分开 |
+| `MAP-FY-GBV-BUY` | `FUIOU` | `SC-FY-GBV-CODE` | `buyPriceAmt` | `AMT.GBV.BUY_PRICE` | `HOLD_UNIDENTIFIED` | `NOT_UNTIL_CONFIRMED` | `FORBIDDEN` | 平台技术支持 | 不换算，不进入订单类型 |
+| `MAP-FY-GBV-COUPON` | `FUIOU` | `SC-FY-GBV-CODE` | `couponAmt` | `AMT.GBV.COUPON` | `HOLD_UNIDENTIFIED` | `NOT_UNTIL_CONFIRMED` | `FORBIDDEN` | 平台技术支持 | DDL 注释不是单位证明 |
+| `MAP-FY-GBV-FACE` | `FUIOU` | `SC-FY-GBV-CODE` | `faceAmt` | `AMT.GBV.FACE` | `HOLD_UNIDENTIFIED` | `NOT_UNTIL_CONFIRMED` | `FORBIDDEN` | 平台技术支持 | 不与实际抵扣合并 |
+| `MAP-FY-GBV-FACE-VALUE` | `FUIOU` | `SC-FY-GBV-CODE` | `faceValue` | `AMT.GBV.FACE_VALUE` | `HOLD_UNIDENTIFIED` | `NOT_UNTIL_CONFIRMED` | `FORBIDDEN` | 平台技术支持 | 第八列。不换算 |
+| `MAP-FY-GBV-HB` | `FUIOU` | `SC-FY-GBV-CODE` | `platHongBao` | `AMT.GBV.PLAT_HONGBAO` | `HOLD_UNIDENTIFIED` | `NOT_UNTIL_CONFIRMED` | `FORBIDDEN` | 平台技术支持 | 不是订单平台承担优惠 |
+| `MAP-FY-GBV-INCOME` | `FUIOU` | `SC-FY-GBV-CODE` | `mchntIncome` | `AMT.GBV.MCHNT_INCOME` | `HOLD_UNIDENTIFIED` | `NOT_UNTIL_CONFIRMED` | `FORBIDDEN` | 平台技术支持；财务负责人 | 不是商家应收，也不是结算额 |
+| `MAP-FY-GBV-THIRD-INCOME` | `FUIOU` | `SC-FY-GBV-CODE` | `thirdMchntIncome` | `AMT.GBV.THIRD_MCHNT_INCOME` | `HOLD_UNIDENTIFIED` | `NOT_UNTIL_CONFIRMED` | `FORBIDDEN` | 平台技术支持 | 不与上一列相加 |
+| `MAP-FY-GBV-FEE` | `FUIOU` | `SC-FY-GBV-CODE` | `thirdServiceFee` | `AMT.GBV.THIRD_SERVICE_FEE` | `HOLD_UNIDENTIFIED` | `NOT_UNTIL_CONFIRMED` | `FORBIDDEN` | 平台技术支持 | 不从收入列扣，也不是春节服务费 |
 
 `unitConstraint` 对上表的统一写法：官方或摘录写了单位的，只把该文字记入单位声明；没写的保持 `UNKNOWN`。两种情况都不执行转换。团购八列即使 DDL 写“分”，单位约束仍是 `UNCONFIRMED`。
 
 ### 5.3 明确不映射
 
-| 对象 | 结果 | 原因 |
-| --- | --- | --- |
-| `SC-JD-MSG-ORDER-CREATED` 全部字段 | `UNMAPPED` | 消息体没有金额 |
-| `SC-TB-MSG-CATALOG` 的消息名 | `UNMAPPED` | 只有名称，没有金额结构 |
-| 任意字段到 `AMT.PAY.SUCCESS` | `DISALLOWED` | 合计槽位不是字段映射目标。当前也没有生效合计规则 |
-| 任意字段到 `AMT.RFD.SUCCEEDED` | `DISALLOWED` | 同上 |
-| 任意字段到 `AMT.FIN.SETTLEMENT` | `DISALLOWED` | 无公式。应收、实付都不能推导 |
-| 任意字段到 `AMT.IND.TURNOVER` 或 `AMT.IND.NET` | `DISALLOWED` | 旧营业额公式不是经营成交额。退款不自动冲减 |
-| 任意字段到 `AMT.FEE.DELIVERY` | `DISALLOWED` | 编码已停用 |
-| 任意字段到 `AMT.USR.PAID` | 不生效 | 当前没有可映射字段。京东应付、美团总价、富智云 `payAmt`、淘宝 `totalPrice` 都不得改名成实付 |
+| 对象 | candidateDisposition | 执行状态 | 原因 |
+| --- | --- | --- | --- |
+| `SC-JD-MSG-ORDER-CREATED` 全部字段 | `NO_AMOUNT` | `UNMAPPED` | 消息体没有金额 |
+| `SC-TB-MSG-CATALOG` 的消息名 | `NO_AMOUNT` | `UNMAPPED` | 只有名称，没有金额结构 |
+| 任意字段到 `AMT.PAY.SUCCESS` | `BLOCKED_BY_ELIGIBILITY` | 不产生 `MAPPED` | 类型资格 `DISALLOWED`。它不是 MappingStatus |
+| 任意字段到 `AMT.RFD.SUCCEEDED` | `BLOCKED_BY_ELIGIBILITY` | 不产生 `MAPPED` | 同上 |
+| 任意字段到 `AMT.FIN.SETTLEMENT` | `BLOCKED_BY_ELIGIBILITY` | 不产生 `MAPPED` | 无公式。应收、实付都不能推导 |
+| 任意字段到 `AMT.IND.TURNOVER` 或 `AMT.IND.NET` | `BLOCKED_BY_ELIGIBILITY` | 不产生 `MAPPED` | 旧营业额公式不是经营成交额 |
+| 任意字段到 `AMT.FEE.DELIVERY` | `BLOCKED_BY_ELIGIBILITY` | 不产生 `MAPPED` | 编码已停用，资格 `DISALLOWED` |
+| 任意字段到 `AMT.USR.PAID` | `BLOCKED_BY_ELIGIBILITY` | 不产生 `MAPPED` | 资格 `NOT_UNTIL_CONFIRMED`，当前没有可映射字段 |
 | `detail[].box_num × detail[].box_price` | 不在映射中计算 | 这是将来的计算规则。mode=0 且字段组缺失以外，没有回退授权 |
 | 旧代码 `yuanToCent`、`longValue` 截断、`Math.abs` | 不进入转换策略 | 只作为 E4 风险保留 |
 
@@ -316,21 +372,21 @@ trade-flow 设计文档还出现 `platformPointsDeductionMoney`、`orderReceivab
 
 ## 6. 映射状态和生命周期
 
-规则生命周期：
+AmountMapping.lifecycleStatus 只描述规则：
 
-1. 新规则从 `DRAFT` 开始。草稿可以保存候选和冲突，不能给新报文生成正式标准金额观测。
-2. 类型编码仍是 `DRAFT` 时，指向它的映射也不能标成 `ACTIVE`。当前因此没有任何生效映射。
-3. 平台文档、业务或财务按第 11 节确认后，增加新的 `mappingVersion`。只有这个新版本可以被批准为 `ACTIVE`，并写下 `effectiveFrom`。
+1. 新规则从 `DRAFT` 开始。草稿可以记录 candidateDisposition，不能给新报文生成正式标准金额观测。
+2. 目标类型仍是 `DRAFT` 时，指向它的规则不能批成 `ACTIVE`。当前因此没有生效映射。
+3. 平台文档、业务或财务按第 11 节确认，并且类型资格允许之后，才增加新的 `mappingVersion`。只有这个新版本可以变成 `ACTIVE`，并写下 `effectiveFrom`。
 4. 旧版本写上 `effectiveTo`，生命周期改为 `RETIRED`。它不删除，继续解释旧观测。
 5. 停用不是改写历史。已经保存的 ObservedAmount 仍指向当时的 `mappingId` 加 `mappingVersion`。
 
-观测结果状态：
+ObservedAmount.mappingStatus 只描述一次执行，取值只有三个：
 
-- `MAPPED`：使用的映射版本当时是 `ACTIVE`，且目标资格允许。本设计现在没有这种观测。
-- `UNMAPPED`：该路径按规则不产生金额。
-- `CONFLICT`：多个候选或两种解释。原文仍只有一份。
+- `MAPPED`：当时使用的规则是 `ACTIVE`，目标资格允许，并且这次采纳的是一个正式业务金额类型。本设计现在没有这种观测。
+- `UNMAPPED`：这次没有把路径采纳为正式业务金额。契约本身没有金额，或规则仍是草稿，都使用这个结果。
+- `CONFLICT`：同一次执行里，同一契约版本的同一路径被写成两个正式类型，或两种解释都不能排除。此时不能挑选一个默认类型，也不能生成两条 `MAPPED`。原文仍只有一份。
 
-未识别观测使用 `AMT.UNK.UNIDENTIFIED`，并保留 mappingId `MAP-UNK-HOLD` 的将来版本。它表示“先保存，语义未确认”，不是已经映射成功。
+candidateDisposition 不写入观测，也不因为写成 `CONFLICTING_CANDIDATES` 就自动变成已经发生的 `CONFLICT`。只有执行真的遇到不能并存的解释时，才记录 `CONFLICT`。
 
 ## 7. 单位、币种、精度约束
 
@@ -350,7 +406,13 @@ trade-flow 设计文档还出现 `platformPointsDeductionMoney`、`orderReceivab
 
 RawAmountValue 的七种形态继续分开：`ABSENT`、`PRESENT_NULL`、`EMPTY_STRING`、`NUMERIC_ZERO`、`NUMERIC_TEXT`、`OTHER_TEXT`、`NON_SCALAR`。只有真实数字 0 是 `NUMERIC_ZERO`。缺失、null 和空字符串都不是 0。
 
-未识别金额允许保存，前提是同时有 RawAmountValue、AmountSource、`fieldPath`、`sourceContractId`、`sourceContractVersion` 和 `rawPayloadRef`。它不表示语义已确认，不能进入计算，也不能直接改成用户实付、商家应收、结算额或经营成交额。
+未识别金额的保存方式：
+
+1. 原文可以保存，并且必须同时有 RawAmountValue、AmountSource、`fieldPath`、`sourceContractId`、`sourceContractVersion` 和 `rawPayloadRef`。
+2. 观测上可以保留 `AMT.UNK.UNIDENTIFIED`。
+3. 这不表示业务语义已经确认，semanticStatus 仍是无法验证。
+4. 不允许参与计算，也不能直接改成用户实付、商家应收、结算额或经营成交额。
+5. 这次保存对正式业务类型的执行状态是 `UNMAPPED`。不得写成 `MAPPED`，以免被看成普通业务金额映射成功。
 
 `poi_receive_detail`、`extras`、`consumer_prepays` 是非标量或列表。它们可以保存为未识别观测，不能被映射阶段展开后直接加总。`extras` 里缺少 `reduce_fee` 的骑手元素，不能写成优惠额 0。
 
@@ -364,7 +426,7 @@ RawAmountValue 的七种形态继续分开：`ABSENT`、`PRESENT_NULL`、`EMPTY_
 
 - 新规则生效只影响生效之后的新观测。
 - 旧规则退役后仍能按 `mappingId + mappingVersion` 解释旧观测。
-- 冲突映射把两个候选和证据引用记在同一规则版本里，不挑选一个当默认生产映射。
+- 设计上的多个候选写在同一规则版本的 candidateDisposition 里，不挑选默认类型。执行若不能并存，ObservedAmount.mappingStatus 记为 `CONFLICT`。
 - 不允许覆盖历史观测，也不允许改写历史映射结果。重放生成新观测。
 
 同一 `mappingId` 的正文变化必须增加 `mappingVersion`。当前版本号是 `draft-1`。它没有 `effectiveFrom`。
@@ -419,7 +481,7 @@ RawAmountValue 的七种形态继续分开：`ABSENT`、`PRESENT_NULL`、`EMPTY_
 | MAP-09 | 四平台 | 结算相关 | 没有公式。结算样本行数不能证明口径 | 财务结算规则 | 禁止映射 | 用应收或实付顶替 | 财务负责人 | `AMT.FIN.SETTLEMENT` | 映射和推导 |
 | MAP-10 | 京东、美团、淘宝、富智云 | 设计文档中的额外金额名 | 本轮只看到名称，没有官方页 | 字段路径、类型、单位、含义 | 无 | 为了覆盖率强行归类 | 平台技术支持 | 无 | 建立正式候选 |
 
-MAP-10 至少包括：京东 `platformPointsDeductionMoney`、`orderReceivableFreight`、`afsMoney`、`externalOnlinePayment`、商品行 `refundUserMmoney`；淘宝优惠拆分字段的报文路径；富智云 `orderAmt`、`wipeZeroAmt`。确认前一律按未识别保存，或者在路径尚未确定时不建观测。
+MAP-10 至少包括：京东 `platformPointsDeductionMoney`、`orderReceivableFreight`、`afsMoney`、`externalOnlinePayment`、商品行 `refundUserMmoney`，以及淘宝优惠拆分字段的报文路径。这些名字还没有定位到官方契约。富智云 `orderAmt`、`payAmtExtra`、`wipeZeroAmt` 已改到代码调查来源，不再算作订单摘录字段。路径尚未确定的名字，确认前不建正式观测。
 
 ## 12. 映射验收标准
 
@@ -428,7 +490,7 @@ MAP-10 至少包括：京东 `platformPointsDeductionMoney`、`orderReceivableFr
 1. 目标编码存在于冻结目录，且不是 `RETIRED`。
 2. 目标类型已经被明确采用；在那之前，类型仍是 `DRAFT`，映射也不能生效。
 3. `mappingEligibility` 不是 `NOT_UNTIL_CONFIRMED` 或 `DISALLOWED`。
-4. 同一契约版本、同一路径只有一个目标。冲突未消除时不能生效。
+4. 同一契约版本、同一路径只有一个正式目标。candidateDisposition 仍是 `MULTI_CANDIDATE` 或 `CONFLICTING_CANDIDATES` 时不能生效；执行中的 `CONFLICT` 也必须先消除。
 5. 单位、币种、精度要么已由契约写明，要么规则明确声明不转换。未知不能被填默认值。
 6. 规则能追溯 `sourceContractId`、`sourceContractVersion`、`fieldPath`、`mappingId`、`mappingVersion` 和证据引用。
 7. 不依赖其他平台的同名字段。
@@ -466,6 +528,7 @@ MAP-10 至少包括：京东 `platformPointsDeductionMoney`、`orderReceivableFr
 
 | 轮次 | 内容 |
 | --- | --- |
-| 初稿 | 建立四平台字段清单、候选映射、未识别和禁止映射。未执行测试，未改代码和冻结类型文档 |
+| 初稿 | 建立四平台字段清单和候选映射 |
+| 第二轮 | 映射状态改回 06-03-01 的定义侧与执行侧。候选评估改称 candidateDisposition。代码字段不再写入未经证明的官方契约。补齐 `MAP-MT-BAG-FEE` |
 
 标准金额类型编码不再扩展。下一步若要继续，只应补充本文件第 11 节所缺的证据，而不是新增类型编码。
