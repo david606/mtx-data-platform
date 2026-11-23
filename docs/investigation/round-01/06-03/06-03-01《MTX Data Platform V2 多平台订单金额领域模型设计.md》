@@ -55,7 +55,8 @@ trade-flow 是旧系统证据。它的字段名、公式和 Doris 列都不是 V
 
 | 候选 | 职责 | 决定 |
 | --- | --- | --- |
-| Money | 一个不可变数值：原文字、解析后的十进制值、单位、标度。不表示业务含义 | 采用。没有单位时单位为 `UNKNOWN`，不默认成分或元 |
+| Money | 解析后的金额值：数值、币种、单位、标度。不保存报文字面，也不表示业务含义 | 采用。币种和单位分开。没有声明时分别为 `UNKNOWN`，不从“分”推出人民币，也不默认成分 |
+| RawAmountValue | 某个字段在报文里的原始文字和未换算取值 | 采用。标准化之后仍靠它还原原文。它不是 Money |
 | AmountType | 第 1 节术语在模型里的类型码 | 采用。未确认术语也可以作为类型存在，但实例必须带确认状态 |
 | AmountSource | 这条金额来自哪个平台、哪份报文、哪个原始字段、哪一版接口说明 | 采用 |
 | AmountUnit | 分、元或未知 | 不单独成对象。作为 Money 的属性 |
@@ -70,8 +71,9 @@ trade-flow 是旧系统证据。它的字段名、公式和 Doris 列都不是 V
 
 ```mermaid
 flowchart LR
-  Source[AmountSource]
+  Raw[RawAmountValue]
   Money[Money]
+  Source[AmountSource]
   Type[AmountType]
   Observed[ObservedAmount]
   Mapping[AmountMapping]
@@ -79,18 +81,17 @@ flowchart LR
   Calc[AmountCalculation]
   Recon[AmountReconciliation]
 
-  Source --> Observed
+  Raw --> Observed
   Money --> Observed
+  Source --> Observed
   Type --> Observed
-  Mapping --> Type
-  Mapping --> Source
+  Mapping --> Observed
   Rule --> Calc
   Observed --> Calc
-  Type --> Calc
   Observed --> Recon
 ```
 
-`ObservedAmount` 是本设计补上的观测对象：一次从报文读到的金额，同时带着原始 Money 和建议的 AmountType。候选名单里没有它。没有它，Money 就只剩数字，AmountSource 就只剩出处，两者无法组成“这一字段的这一次取值”。这是建议增加的领域对象，仍放在 `platform-core`，不是新 Maven 模块。
+`RawAmountValue` 和 `ObservedAmount` 是候选名单之外补上的对象，仍只放在 `platform-core`，不是新 Maven 模块。一次取值由原始值、可选的标准金额、金额类型和来源组成。Money 只回答“数值是多少、什么币、什么单位、几位小数”。原始文字留在 RawAmountValue。
 
 ## 3. 核心对象属性
 
@@ -98,60 +99,129 @@ flowchart LR
 
 ### 3.1 Money
 
+Money 是金额值，不是报文片段。
+
 | 属性 | 含义 | 约束 |
 | --- | --- | --- |
-| rawText | 报文中的原始文字 | 标准化后仍保留。缺失则为无 |
-| decimalValue | 按原始标度解析的十进制数 | 解析失败则无，并记录原因。不截断小数来凑整数 |
-| unit | `FEN`、`YUAN`、`UNKNOWN` | 官方或摘录没写单位时必须是 `UNKNOWN` |
-| scale | 原始小数位数 | 未知则为无。不得为了统一提前四舍五入 |
+| decimalValue | 解析后的十进制数 | 解析失败则这条 Money 不建立。不截断小数来凑整数。原始文字不放在这里 |
+| currency | 币种，例如 `CNY` | 与单位分开。当前业务以人民币为主，但字段没写币种时用 `UNKNOWN`。不能因为单位是分就写成人民币 |
+| unit | `FEN`、`YUAN`、`UNKNOWN` | 元和分是计量单位，不是币种。官方或摘录没写单位时必须是 `UNKNOWN` |
+| scale | 该数值的小数位数 | 未知则为无。不得为了统一提前四舍五入 |
 | signed | 是否允许负数 | 未说明的字段不默认只能为正 |
+
+未知单位的 Money 不能参与相加或换算。这是保护建议，不是已确认的业务公式。
+
+### 3.1a RawAmountValue
+
+| 属性 | 含义 | 约束 |
+| --- | --- | --- |
+| rawText | 报文字段的原始文字 | 标准化后仍保留。缺失则为无 |
+| fieldPath | 字段在该报文中的路径 | 同名不同路径不能合成一个值。例如订单根上的金额和明细上的同名字段要分开 |
+| declaredUnitText | 来源材料里的单位原文 | 没有就空着。不在这里换成 `FEN` 或 `YUAN` |
+
+RawAmountValue 不承载业务类型。能否变成 Money，由映射时的解析结果决定。解析失败时仍然保留 RawAmountValue。
 
 ### 3.2 ObservedAmount
 
-| 属性 | 含义 |
+ObservedAmount 把一次原始取值、可选的标准金额、金额类型和来源连在一起。它不覆盖更早的观测。后到的支付或退款报文新增观测，不改写已经保存的观测。
+
+| 属性 | 是否放入 | 属于哪一层 | 理由 |
+| --- | --- | --- | --- |
+| observationId | 放入 | 领域标识 | 区分每一次取值。生成算法未设计 |
+| businessObjectType | 放入 | 领域关联 | 订单、支付流水、退款单、退款明细必须分开。金额类型不能代替业务对象 |
+| businessObjectId | 放入 | 领域关联 | 和上一列一起，才能把金额连到具体订单、支付或退款。标识来源未设计 |
+| rawValue | 放入 | 领域 | 指向 RawAmountValue。原文不因映射成功而丢掉 |
+| money | 放入，可空 | 领域 | 指向 Money。尚未解析或单位未知时为空。空不是 0 |
+| proposedType | 放入 | 领域 | 建议语义。未确认时仍填最接近的类型，并把状态标成待确认 |
+| confirmation | 放入 | 领域 | `官方已读到`、`摘录未证版本`、`仅旧代码`、`待平台确认`、`存在冲突`、`待业务确认`、`待财务确认` |
+| mappingVersion | 放入 | 领域 | 标准金额来自哪一版映射。与计算规则版本不是同一件事 |
+| readiness | 放入 | 领域状态 | `RAW_SAVED` 只说明原文已保存。`STANDARD_MAPPED` 说明已经给出标准金额或明确无法映射。`CALCULATION_PRODUCED` 只出现在另有计算记录时。三个状态不能互相代替 |
+| source | 放入 | 领域关联 | AmountSource。见下文不重复堆在本对象上的技术字段 |
+| evidenceRef | 放入 | 追溯 | SRC、R-09 问题编号或仓库摘录路径 |
+| tenantId | 不放入本对象的金额语义 | 业务身份，模型未设计 | 连锁平台以后很可能要按租户隔离。租户对象本身尚未定义。观测只保留 businessObject 关联，不单造一个无法解释的租户字段 |
+| sourceEventId | 不重复放入 | 来源关联，放在 AmountSource | 需要能回到触发这次取值的事件。它是来源身份，不是金额值 |
+| sourceMessageId | 不重复放入 | 来源关联，放在 AmountSource，可空 | 平台消息号和事件号不一定相同。京东 `billId` 不是金额。有则记录，没有不编造 |
+| sourceFieldPath | 不重复放入 | 已在 RawAmountValue.fieldPath | 避免同一路径存两份 |
+| receivedAt | 放入 AmountSource，不放入 Money | 技术元数据 | 接收时间用于追溯和重试，不改变金额含义。保存产品未设计 |
+
+因此一条支付金额观测关联支付流水，一条退款金额观测关联退款单或退款明细，两者都不覆盖订单上更早的金额观测。订单、支付、退款之间的金额是否相等，仍然由未确认的对账关系表达。
+
+AmountSource 只描述“这次取值从哪来”，不描述数值。
+
+| 属性 | 理由 |
 | --- | --- |
-| observationId | 一次观测的标识。生成方式未设计 |
-| source | AmountSource |
-| money | Money |
-| proposedType | 建议语义。未确认时仍要填最接近的类型，并把状态标成待确认 |
-| confirmation | `官方已读到`、`摘录未证版本`、`仅旧代码`、`待平台确认`、`存在冲突`、`待业务确认`、`待财务确认` |
-| evidenceRef | SRC、R-09 问题编号或仓库摘录路径 |
+| sourceEventId | 回到触发事件。没有事件号时为空，不编造 |
+| sourceMessageId | 平台消息号。与事件号不同才填写，例如不能把京东 `billId` 自动当成金额标识 |
+| sourceContractId | 与 AmountMapping 使用同一契约编号，避免观测和映射各说各的接口 |
+| receivedAt | 技术时间，挂在来源记录上。它不进入 Money |
+
 
 ### 3.3 AmountMapping
 
-| 属性 | 含义 |
-| --- | --- |
-| mappingId | 映射编号 |
-| platform | `JD`、`MEITUAN`、`TAOBAO_FLASH`、`FUIOU` |
-| rawField | 原始字段名，保持平台拼写 |
-| targetType | 一个 AmountType。禁止一字段映射成两个已确认语义 |
-| unitDeclaration | 来源声明的单位。没有声明则为未知 |
-| lossPolicy | 只允许“保留原始标度”。不允许“先转分再丢掉小数”作为默认 |
-| confirmation | 同观测状态 |
-| oldSystemField | trade-flow 代码字段，可空。只作对照 |
+映射的身份必须包含接口契约，不能只包含字段名。京东 `orderCreated` 没有金额，查询摘录里才有同主题的金额字段。若两份契约共用一条只按字段名匹配的映射，就会把消息页上不存在的字段当成已经出现。美团回调是不是 SRC-02 那一页，也还没证明。同名字段在未证明是同一契约之前，不能共用语义。
+
+| 属性 | 是否放入 | 理由 |
+| --- | --- | --- |
+| mappingId | 放入 | 映射编号 |
+| platform | 放入 | `JD`、`MEITUAN`、`TAOBAO_FLASH`、`FUIOU` |
+| sourceContractId | 放入 | 一份契约一个身份。创建消息和订单查询即使平台相同，也是两份契约 |
+| sourceInterface | 放入 | 接口或页面名称。SRC-03 是创建新订单消息，不是订单查询 |
+| sourceMessageType | 放入，可空 | 消息类契约要写消息号或消息名，例如淘宝 217、京东 `orderCreated`。查询接口可以空，但不能因此和消息契约合并 |
+| sourceContractVersion | 放入 | 材料上的版本或更新时间。没有版本时写“未提供”，不假设永远有效。京东消息页有更新时间。淘宝目录页没有 |
+| effectiveFrom | 放入，可空 | 这条映射被批准使用的开始时间。未确认映射没有生效时间 |
+| effectiveTo | 放入，可空 | 停止使用的时间。过期映射保留，供旧观测解释，不删 |
+| rawField | 放入 | 原始字段名，保持平台拼写 |
+| fieldPath | 放入 | 该契约内的路径。只有字段名不够 |
+| targetType | 放入 | 一个 AmountType。禁止一字段在同一契约版本里映射成两个已确认语义 |
+| unitDeclaration | 放入 | 来源声明的单位。没有声明则为未知。单位不是币种 |
+| lossPolicy | 放入 | 只允许“保留原始标度”。不允许“先转分再丢掉小数”作为默认 |
+| confirmation | 放入 | 同观测状态 |
+| oldSystemField | 放入，可空 | trade-flow 代码字段。只作对照，不参与匹配 |
 
 ### 3.4 AmountCalculationRule
+
+规则除了公式，还要能说明它有没有被批准、从何时到何时有效、定义有没有被改过。下面先判断每个候选属性，再列出采用结果。
+
+| 候选 | 决定 | 理由 |
+| --- | --- | --- |
+| ruleStatus | 采用 | 把“草稿、已批准、生效中、已停用”分开。只有生效中的规则能产出业务计算结果。参照规则保持草稿或单独的“仅旧代码”，不进入生效 |
+| approvedBy | 不作为计算属性 | 批准人是审计信息。当前没有审批制度，不能虚构批准人。若以后要追溯，放在规则之外的审批记录，不参与求值 |
+| approvedAt | 不作为计算属性 | 同上。生效时间已经表达何时可用，不能用一个空的批准时间假装已经批准 |
+| effectiveFrom | 采用 | 生效起点。未批准或仅旧代码的规则没有这个时间 |
+| effectiveTo | 采用 | 停用时间。空表示尚未停用。停用后旧计算结果仍指向原版本 |
+| ruleDefinitionHash | 采用 | 规则正文的摘要。同一版本号下正文变化必须能被发现。算法未选定，本文不规定哈希函数 |
+| evaluatorVersion | 采用 | 解释规则的程序版本。规则正文没变，求值程序变了，也要能区分。当前没有求值器 |
+| calculationPrecision | 采用 | 计算过程保留的小数精度。它不是币种，也不是输入字段自己的 scale |
+| roundingMode | 采用 | 未确认时为“不舍入”。不把旧系统元转分的四舍五入写成默认 |
+| roundingScale | 采用 | 与舍入方式成对。不舍入时为空 |
+
+采用后的属性：
 
 | 属性 | 含义 |
 | --- | --- |
 | ruleId | 规则编号 |
+| version | 版本号。与 ruleDefinitionHash 一起标识正文 |
 | name | 规则名称 |
+| ruleStatus | `DRAFT`、`APPROVED`、`EFFECTIVE`、`RETIRED`，或 `LEGACY_CODE_ONLY`。后一个只给 trade-flow 参照规则 |
 | platform | 一个平台，或明确写成跨平台。不能用一个公式偷偷覆盖四平台 |
 | targetObject | 订单、支付、退款或退款明细 |
-| inputs | 输入的 AmountType 列表 |
+| inputs | 输入的 AmountType 列表。输入观测的业务对象必须与 targetObject 相容。支付成功额的输入是支付观测，不是订单观测 |
 | strategy | 表达式或“暂不计算” |
 | outputType | 输出类型 |
-| unitAndScale | 输出要求。输入单位未知时规则不能生效 |
+| calculationPrecision | 计算精度。输入单位未知时规则不能生效 |
+| roundingMode | 舍入方式。未确认则为不舍入 |
+| roundingScale | 舍入位数。不舍入时为空 |
 | nullPolicy | 输入缺失时的动作。建议默认是输出为空并写原因，不补 0。此默认仍是建议 |
-| rounding | 舍入。未确认则为“不舍入” |
-| version | 版本号 |
 | effectiveFrom | 生效时间。未批准的规则没有生效时间 |
+| effectiveTo | 停用时间。可空 |
+| ruleDefinitionHash | 正文摘要。算法未定 |
+| evaluatorVersion | 求值器版本。实现未定 |
 | evidence | 证据编号 |
 | confirmation | `仅旧代码`、`待业务确认`、`待财务确认`、`已确认`。当前没有任何经营或结算规则可标已确认 |
 
 ### 3.5 AmountCalculation
 
-记录规则版本、输入观测标识、输出 Money 或空、空值原因、计算时间。重算生成新记录，不改原始观测。
+记录规则编号、规则版本、ruleDefinitionHash、evaluatorVersion、输入观测标识、输出 Money 或空、空值原因、计算时间。重算生成新记录，不改原始观测，也不把观测的 readiness 从“已映射”改回“未保存”。`CALCULATION_PRODUCED` 只加在计算记录上，表示业务结果已生成。它不代替原文已保存，也不代替标准金额已映射。
 
 ### 3.6 AmountReconciliation
 
@@ -161,7 +231,7 @@ flowchart LR
 | right | 右侧观测或计算结果 |
 | difference | 两者之差。任一侧为空则差异为空 |
 | businessMeaning | 例如“订单侧金额与支付成功合计”。等式未确认时，含义栏写“待确认，仅观测” |
-| disposition | 建议只告警，不阻断写入。阻断条件待业务确认 |
+| disposition | 未确认的业务等式不得登记成错误规则。可以记成“仅观测”。是否告警、是否阻断，都还没定 |
 
 ## 4. 四平台金额字段映射矩阵
 
@@ -285,31 +355,49 @@ flowchart TB
 
 京东原收款在旧系统里用应付字段生成，类型仍是用户应付的一次使用，不是已经对账的支付成功流水。
 
+### 6.1 状态、观测和结果
+
+支付状态、退款状态不是金额类型。`支付成功金额` 只有在状态集合被确认、并且某条支付观测的状态落入“成功”之后，才允许被合计规则读取。状态未知时，这条观测保留，金额不改成 0，也不算进成功合计。退款成功金额同样只读取已被确认的成功状态。R-09 没有确认“部分成功”状态，这里不补这个状态。
+
+支付金额观测和退款金额观测是追加的。新报文产生新的 ObservedAmount。它不覆盖更早的支付观测、退款观测或订单金额观测。旧系统里“低版本不覆盖、成功不被非成功撤销”只是 trade-flow 的代码行为，还不是 V2 规则。
+
+三个状态必须同时能看见，不能合成一个“处理完成”：
+
+| 状态 | 含义 | 还不能表示 |
+| --- | --- | --- |
+| 原始金额已保存 | RawAmountValue 和报文仍在 | 还没有标准语义 |
+| 标准金额已映射 | ObservedAmount 已指向 Money，或明确记录无法映射 | 还没有经营额、净额或结算额 |
+| 业务计算结果已生成 | 一条生效规则写出了 AmountCalculation | 不改写前两个状态。参照规则即使算出旧营业额，也不把这个状态写成经营结果已确认 |
+
 ## 7. 金额处理时序
 
 V2 当前没有这条链路。下图是建议的目标顺序，实现前每一框都未验收。
 
+下图里的箭头只指向 `platform-core` 中的端口。`platform-pipeline` 不依赖 Connector、Transform、Quality、Writer。这些实现由 `app-worker` 在启动时装配到端口上。能力模块之间没有调用箭头。原始保存是待设计的端口，图中不把它画成新的 Maven 模块，也不把它画成 Doris。
+
 ```mermaid
 sequenceDiagram
   participant Platform as 平台报文
-  participant Connector as platform-connector
-  participant Store as 原始数据保存
-  participant Transform as platform-transform
-  participant Quality as platform-quality
-  participant Writer as platform-writer
-  participant Doris as Doris
-  participant Admin as app-admin 查询
+  participant Worker as app-worker
+  participant Pipe as platform-pipeline
+  participant In as 接入端口
+  participant Raw as 原始保存端口
+  participant Map as 映射与计算端口
+  participant Check as 质量检查端口
+  participant Sink as 写入端口
 
-  Platform->>Connector: 回调或查询结果
-  Connector->>Store: 保存原文、来源、报文版本。不解释金额语义
-  Store->>Transform: 读取不可变原文
-  Transform->>Transform: 按 AmountMapping 生成 ObservedAmount
-  Transform->>Transform: 只执行已生效规则。未确认规则不产出经营或结算额
-  Transform->>Quality: 观测、计算结果、规则版本
-  Quality->>Quality: 记录差异。未确认等式只告警候选
-  Quality->>Writer: 通过的原始金额、标准金额、规则版本、质量标记
-  Writer->>Doris: 写入。表结构未设计
-  Admin->>Doris: 指标查询。指标服务模块不存在
+  Note over Worker: 装配 connector、transform、quality、writer 和保存适配。保存适配的模块归属未定
+  Worker->>Pipe: 启动一次编排
+  Platform->>In: 回调或查询结果进入已装配的接入实现
+  Pipe->>In: 第 1 步，只调用接入端口
+  Pipe->>Raw: 第 2 步，保存不可变原文、来源和契约版本
+  Note over Raw: 端口在 platform-core。存储产品未选，不新增模块
+  Pipe->>Map: 第 3 步，生成 RawAmountValue、Money 和 ObservedAmount
+  Note over Map: 只有 EFFECTIVE 规则才生成业务计算结果
+  Pipe->>Check: 第 4 步，检查已确认的质量条件
+  Note over Check: 未确认的金额等式不是错误规则
+  Pipe->>Sink: 第 5 步，写入原始值、标准金额、规则版本和质量标记
+  Note over Sink: 目标表未设计。查询适配不在这条写入链路里
 ```
 
 各层职责：
@@ -317,12 +405,12 @@ sequenceDiagram
 | 层 | 负责 | 不负责 |
 | --- | --- | --- |
 | 平台原始报文 | 平台给出的内容和版本 | V2 不能改写平台原文 |
-| 原始数据保存 | 原文、接收时间、来源标识、接口或消息版本 | 不把字段解释成实付或应收。保存位置未设计 |
-| 标准化映射 | 生成带确认状态的 ObservedAmount，保留原始精度 | 不合并不同语义，不补 0 |
-| 金额计算 | 按已生效规则版本计算。参照规则默认不生效 | 不把旧营业额公式改成经营口径 |
-| 质量检查 | 单位未知、映射冲突、未确认差异 | 不在等式未确认时把差异定义成数据错误 |
-| Doris 写入 | 原字段、标准类型、规则版本、质量标记一起落库 | 不在写入时现算另一套口径。表尚未设计 |
-| 指标读取 | 只读已经写明规则版本的结果 | 当前没有独立指标模块。查询若要做，只能落在现有 `app-admin`，且契约未设计 |
+| 接入端口 | 拿到平台报文 | 不解释实付或应收。实现在 connector，由 worker 装配 |
+| 原始保存端口 | 原文、接收时间、来源标识、契约编号和版本 | 不解释金额。存储产品和适配放在哪个现有模块，待设计。不新增模块 |
+| 映射与计算端口 | 生成 RawAmountValue、可空的 Money、带确认状态的 ObservedAmount。只执行 `EFFECTIVE` 规则 | 不调用质量模块，不写 Doris，不合并不同语义，不补 0 |
+| 质量检查端口 | 单位未知、契约混用、已确认的质量条件 | 未确认的业务等式不能登记成错误规则，也不能因为应付不等于流水合计就判失败 |
+| 写入端口 | 原字段、标准类型、规则版本、质量标记一起交给写入实现 | 不在写入时现算另一套口径。表尚未设计。写入实现不反调用 transform 或 quality |
+| 查询 | 本链路不包含查询 | Doris 查询适配器的模块归属待后续设计。本文不把它定在 `app-admin` |
 
 错误、重试和升级：
 
@@ -373,15 +461,15 @@ flowchart TB
 | 模块 | 金额相关职责 | 不放入的内容 |
 | --- | --- | --- |
 | platform-common | 无金额语义。若以后只有与业务无关的错误码，才考虑放这里 | Money、平台字段、规则 |
-| platform-core | Money、ObservedAmount、AmountType、AmountSource、AmountMapping、规则、计算记录、对账记录，以及映射、计算、检查、写入的端口 | Spring、Kafka、JDBC、某平台报文解析 |
+| platform-core | Money、RawAmountValue、ObservedAmount、AmountType、AmountSource、AmountMapping、规则、计算记录、对账记录，以及接入、原始保存、映射计算、质量检查、写入的端口 | Spring、Kafka、JDBC、某平台报文解析、具体存储产品 |
 | platform-messaging | 投递和消费原文。消息体仍是原始载荷 | 金额计算 |
 | platform-connector | 取得报文并填写 AmountSource 的来源事实：平台、接口名、看到的版本 | 判断用户实付等于某字段 |
 | platform-transform | 实现映射端口和计算端口。未确认映射产出“待确认”观测 | 写 Doris，不调用质量模块 |
 | platform-quality | 实现检查端口，读取 core 里的观测和规则状态 | 修改金额，不调用 transform |
 | platform-writer | 实现写入端口。写入内容含规则版本 | 现场决定经营公式 |
-| platform-pipeline | 按 core 端口编排顺序：保存、映射、计算、检查、写入 | 依赖上述四个实现模块，不内嵌公式 |
-| app-worker | 把实现装配到端口并执行。调度触发也只能经 core 抽象进来 | 第二套金额规则 |
-| app-admin | 以后可以提供只读查询。契约未设计 | 执行 Pipeline，依赖 worker |
+| platform-pipeline | 只通过 core 端口编排：接入、保存、映射、计算、检查、写入 | 依赖 connector、transform、quality、writer 的实现。不内嵌公式 |
+| app-worker | 把上述实现和尚未定位的保存适配装配到端口上，再启动 Pipeline | 第二套金额规则。不让能力模块互相引用 |
+| app-admin | 与金额写入链路无关。查询适配器归属待后续设计 | 执行 Pipeline，依赖 worker，提前绑定 Doris 查询 |
 
 这样没有循环：能力模块只指向 core，worker 在最外层装配。不新增 `platform-domain` 或指标模块。
 
@@ -425,8 +513,9 @@ flowchart TB
 3. 经营成交额、净成交额、结算额、用户实付都有类型，没有生效规则。
 4. trade-flow 四套公式登记为参照规则，默认不生效。
 5. 对账对象只记录差异。未确认的等式不阻断写入。
-6. 不新增 Maven 模块。指标读取若需要，优先考虑现有 `app-admin`，但是否做查询不在本文决定。
-7. Pipeline 只依赖 core 端口。Worker 负责装配。
+6. 不新增 Maven 模块。原始保存是 core 里的端口，适配实现的模块归属待设计。
+7. Pipeline 只依赖 core 端口。Worker 负责装配。能力模块互不调用。
+8. Doris 查询适配器的归属待后续设计，不定在 `app-admin`。
 
 ### 10.2 尚未决策
 
@@ -439,6 +528,11 @@ flowchart TB
 | 美团回调是否等于 SRC-02 那一页 | 没有报文 |
 | 京东查询摘录能否作为金额来源 | SRC-002 待平台确认 |
 | 淘宝金额字段名是否继续使用旧代码里的名字 | 没有官方字段页 |
+| 原始保存适配放在 connector、writer 还是其他现有模块 | 只确定端口在 core。不能为保存新增模块 |
+| Doris 查询适配器放在哪个现有模块 | 上一轮若读成“交给 app-admin”，本轮撤销该归属 |
+| 租户标识是否进入金额观测 | 租户模型尚未定义。本轮不把 tenantId 放进金额对象 |
+| 规则摘要算法和求值器版本如何生成 | 属性已留出。实现未定 |
+| 支付成功、退款成功的状态值 | 没有官方状态表。不能把旧代码的状态数字写成 V2 枚举 |
 
 ## 11. 文档自检
 
@@ -449,8 +543,27 @@ flowchart TB
 | 未把代码字段当成业务定义 | `userPayAmount` 只出现在旧代码对照 |
 | 五个易混概念 | 用户应付、用户实付、商家应收、结算额、经营成交额分列。净成交额另列且无公式 |
 | 未虚构官方字段 | 淘宝金额字段标明无官方定义。京东消息页标明无金额。美团字段限于 SRC-02 已读内容 |
-| 未写 SQL、未改代码 | 本轮只新增本文件 |
+| 未写 SQL、未改代码 | 本轮只改本文件 |
+| 时序与 ADR-0002 | Pipeline 只调用 core 端口。Worker 装配实现。图中没有 Transform 到 Quality、Quality 到 Writer 的调用 |
+| 查询归属 | 已改为待后续设计，没有定在 app-admin |
 | 未覆盖已有设计 | 未改 `docs/design/`、`docs/database/`、R-09 和 SRC |
 | 未确认清单 | 第 9 节保留原问题编号 |
 
 本轮未执行测试。未提交 Git，未推送。
+
+## 12. 本轮修订记录
+
+本轮只修订审查指出的设计问题，没有重做四平台矩阵，也没有把建议改成已确认决策。
+
+| 问题 | 修订 |
+| --- | --- |
+| 时序图像能力模块互相调用 | 改为 Worker 装配、Pipeline 按 core 端口编排。原始保存明确为待设计端口，不新增模块 |
+| Money 同时装了原文和数值 | Money 只保留数值、币种、单位、标度。原文改由 RawAmountValue 保存。币种与元、分分开 |
+| 观测连不上订单、支付、退款 | ObservedAmount 增加业务对象类型和标识、映射版本、三项就绪状态。事件号和接收时间归来源或技术元数据，不重复堆进金额值 |
+| 同名字段会跨接口串语义 | AmountMapping 增加契约编号、接口、消息类型、契约版本和生效区间 |
+| 规则缺少生命周期 | 增加状态、生效止期、定义摘要、求值器版本、计算精度和舍入。批准人不进入计算属性 |
+| 状态和金额类型容易混在一起 | 写明成功状态才允许进入成功合计。支付和退款观测不覆盖历史。保存、映射、计算是三种状态 |
+| 质量检查可能把未确认等式当错误 | 对账处置改为不能登记成错误规则 |
+| 查询被提前放到 app-admin | 改为归属待后续设计 |
+
+未决问题见第 9 节和第 10.2 节。其中第 9 节的 AMT、PAY、REF、GBV、SRC 编号保持原样。
