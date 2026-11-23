@@ -32,6 +32,23 @@
 
 活动兼容说明：不应仅因未知活动类型拒单，应按订单返回的金额字段处理。
 
+## 本轮补录的模式枚举
+
+同一页面 2026-11-23 16:42 已读到，第一轮 SRC 没有单独成表。原文没有再推断。
+
+`package_bag_mode` 类型 int，必填为否，示例 2。页面描述：
+
+- 0 = 按商品餐盒费。仅部分应用返回该组字段。未返回不代表金额为 0，按商品行餐盒费回退。
+- 1 = 按订单总价。会同时返回 `package_bag_fee` 与 `package_bag_cart_detail`，无需单独开通。
+- 2 = 按订单口袋。同样会同时返回上述两个字段。
+
+`package_bag_fee` 的优先级写在字段行：有本字段时直接使用，不要用商品行自行加总覆盖。mode=0 时它等于本单商品餐盒费总额；mode=1 是整单打包费；mode=2 是各口袋 `original_package_bag_fee` 之和。
+
+回退计算只在 mode=0 且该组未返回时成立：顶层 `detail` 的 `box_num×box_price` 加总，不要再乘 `quantity`，不要加 `sub_detail_list`。mode=1 或 2 没有这条回退授权。
+
+页面没有把“返回 0”定义成另一种缺失。字段不存在与数值 0 因此不能写成同义词。
+
+
 ## 与 trade-flow
 
 trade-flow 订单回调事件名是 `managedCancelAndConfirmOrder`，不是本页标题里的“已确认订单推送”这个接口名。查询详情会把 `original_price`、`shipping_fee`、`wmPoiReceiveCent`、`extras` 转成代码使用的驼峰字段。见 `MeituanOrderDetailNormalizer` 117–145 行。
