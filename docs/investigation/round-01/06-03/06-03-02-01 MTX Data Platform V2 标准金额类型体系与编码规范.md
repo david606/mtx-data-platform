@@ -211,13 +211,13 @@ EvidenceStatus 仍写在观测上，不写进 semanticStatus。E4 不能把语�
 | currencyRequirement | 类型 | `REQUIRED_BEFORE_AGGREGATION` 或 `NOT_APPLICABLE` |
 | unitRequirement | 类型 | 同上 |
 | precisionPolicy | 类型给出默认约束 | `NO_IMPLICIT_ROUNDING`。真正的舍入只出现在计算规则里 |
-| aggregationPolicy | 类型 | `FORBIDDEN`、`SAME_TYPE_AFTER_CONFIRMATION`、`NOT_APPLICABLE` |
+| aggregationPolicy | 类型 | `FORBIDDEN`、`SAME_TYPE_AFTER_CONFIRMATION`、`RULE_CONTROLLED`、`NOT_APPLICABLE` |
 | currency | 金额实例 Money | `CNY` 或 `UNKNOWN`。类型不默认 CNY |
 | unit | 金额实例 Money | `YUAN`、`FEN` 或 `UNKNOWN`。类型不默认元或分 |
 | unitEvidence | 金额实例 | `CONTRACT_DECLARED`、`UNCONFIRMED`、`UNKNOWN`。DDL 注释不是 `CONTRACT_DECLARED` |
 | calculationPermission | 实例相对计算规则 | `BLOCKED` 或 `OPEN`。单位或币种为 `UNKNOWN` 时必须 `BLOCKED` |
 
-类型上的 `REQUIRED_BEFORE_AGGREGATION` 表示：实例可以暂时是 `UNKNOWN`，但只要还是 `UNKNOWN`，aggregationPolicy 即使写成 `SAME_TYPE_AFTER_CONFIRMATION` 也不能加总。未识别类型的币种和单位要求是 `NOT_APPLICABLE`，因为还没有语义。
+类型上的 `REQUIRED_BEFORE_AGGREGATION` 表示：实例的币种或单位可以暂时是 `UNKNOWN`，但只要其中一项还是 `UNKNOWN`，aggregationPolicy 写成 `SAME_TYPE_AFTER_CONFIRMATION` 或 `RULE_CONTROLLED` 也不能加总。`RULE_CONTROLLED` 的含义仍以第 6.1 节为准：只有将来的 AmountCalculationRule 可以定义怎么加；当前没有生效规则，所以它不等于现在允许执行聚合，也不新增计算公式。未识别类型的币种和单位要求是 `NOT_APPLICABLE`，因为还没有语义。
 
 团购八列的 unitEvidence 固定按 `UNCONFIRMED` 设计。禁止写成 `FEN` 或 `YUAN`。
 
@@ -480,7 +480,7 @@ AMT-001 至 AMT-010、PAY-001 至 PAY-003、REF-001 至 REF-004、GBV-001 至 GB
 
 06-03-02-02 尚未创建。
 
-## 21. 本轮修订记录
+## 21. 第二轮修订记录
 
 | 问题 | 处理 |
 | --- | --- |
@@ -493,7 +493,7 @@ AMT-001 至 AMT-010、PAY-001 至 PAY-003、REF-001 至 REF-004、GBV-001 至 GB
 | 团购第八列未命名 | 按 R-07 和代码定为 `faceValue`，单位仍未知 |
 | 未知字段可能变成两条已确认观测 | 区分为候选、冲突和正式观测 |
 
-本轮只改本文件。未执行测试，未提交，未推送。
+本节只记录第二轮。第二轮当时只改本文件，未执行测试。该轮修订已由 Git 提交 `2f31dfa` 纳入仓库，不再把“未提交、未推送”当作当前仓库状态。
 
 ## 22. 第三轮收尾
 
@@ -503,4 +503,4 @@ AMT-001 至 AMT-010、PAY-001 至 PAY-003、REF-001 至 REF-004、GBV-001 至 GB
 | 未识别类型使用了“契约已定义才可映射” | 改为 `ALLOWED_AS_UNIDENTIFIED` |
 | 合计槽位却写成永远禁止聚合 | 支付成功、退款成功、优惠明细改为 `RULE_CONTROLLED`。当前仍无生效规则。团购和订单级优惠维持 `FORBIDDEN` |
 
-编码仍是 39 个。`AMT.FEE.DELIVERY` 仍是 `RETIRED`。团购单位仍未确认。本轮只改本文件。未执行测试，未提交，未推送。标准金额类型到此停止扩展，下一步是 06-03-02-02 字段映射。
+本节只记录第三轮，与第 21 节的第二轮分开。编码仍是 39 个。`AMT.FEE.DELIVERY` 仍是 `RETIRED`。团购单位仍未确认。第三轮当时只改本文件，未执行测试。该轮修订已由 Git 提交 `978b86c` 纳入仓库。标准金额类型到此停止扩展，下一步是 06-03-02-02 字段映射。
