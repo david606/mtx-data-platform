@@ -66,7 +66,7 @@
 
 另外增加一个治理字段 `approvalStatus`，取值 `NOT_SUBMITTED`、`IN_REVIEW`、`APPROVED`、`REJECTED`。它只表示草稿有没有通过审核，不是第四个生命周期，也不是执行状态。
 
-`DRAFT`、`ACTIVE`、`RETIRED` 仍是 06-03-01 的规则生命周期，但不再做成版本行上可反复改写的一列。未进入任何已完成快照时是 `DRAFT`。进入某个快照后，这一版正文封存；它在该快照里是 `ACTIVE` 还是 `RETIRED`，只写在该快照的条目上。后一个快照可以把同一封存版本看成 `RETIRED`，旧快照里的 `ACTIVE` 不跟着改变。同一份快照也可以同时留下同一字段的多段映射窗口。`RETIRED` 只表示这段窗口已经有右端点，接收时间落在窗口内时仍然要使用它。
+`DRAFT`、`ACTIVE`、`RETIRED` 仍是 06-03-01 的规则生命周期，但不再做成版本行上可反复改写的一列。还没有进入快照、也没有被已发布冲突决定引用时，版本行是未封存的。进入映射快照或被冲突决定发布引用后，正文封存。只有映射条目才把这一版写成 `ACTIVE` 或 `RETIRED`。后一个快照可以把同一封存版本看成 `RETIRED`，旧快照里的 `ACTIVE` 不跟着改变。同一份快照也可以同时留下同一字段的多段映射窗口。`RETIRED` 只表示这段窗口已经有右端点，接收时间落在窗口内时仍然要使用它。
 
 ## 4. SourceContract 配置模型
 
@@ -95,7 +95,7 @@
 
 `mappingId` 沿用 06-03-01：同一契约家族、同一字段路径、同一个目标类型，是一条映射。正文变化增加 `mappingVersion`。路径或目标类型变化则新建 `mappingId`。
 
-映射版本行保存规则正文、资格、语义、证据等级和审核人。生效窗口不写在版本行上，而写在发布快照的映射条目上。版本一旦进入已完成快照就封存。
+映射版本行保存规则正文、资格、语义、证据等级和审核人。生效窗口不写在版本行上，而写在发布快照的映射条目上。版本进入已完成快照，或者作为候选被一条已发布的冲突决定引用后，正文封存。
 
 `candidateDisposition` 只放在草稿上。它不是 MappingStatus，Worker 也不读取草稿。
 
@@ -103,7 +103,7 @@
 
 ## 6. 状态与生命周期
 
-版本行用 `publicationState` 表示正文是否封存：`DRAFT` 或 `SEALED`。这不替换生命周期。未进入快照时是 `DRAFT`。进入某个快照后正文封存；它在该快照条目上的生命周期仍是 `ACTIVE` 或 `RETIRED`。
+版本行用 `publicationState` 表示正文是否封存：`DRAFT` 或 `SEALED`。这不替换生命周期。还没有进入快照、也没有被已发布冲突决定引用的版本是 `DRAFT`。封存后，只有真正进入映射条目的版本才在快照里写成 `ACTIVE` 或 `RETIRED`。只作为冲突候选被封存的版本不写成生效映射。
 
 一个快照里，同一契约版本的同一字段可以有多条映射条目。每条有自己的窗口。窗口之间不能重叠。`RETIRED` 表示这条窗口已经写下右端点，不表示这段历史不能再被匹配。
 
@@ -132,11 +132,26 @@
 
 这里用三张表，而不是一个无法查询的 JSON 块，也不是只存哈希。决定头、候选明细和证据行的职责不同。候选数量不固定，所以不能塞进决定头的一个虚构 ID。
 
-审核流程与映射草稿相同：编辑人创建，另一人审核。未通过审核的决定不能进入快照。发布时，新快照增加一条冲突条目，指向这个 `conflictDecisionId`，并带上该快照实际使用的窗口。候选映射版本保持未生效。
+审核由另一名操作者完成。未通过审核的决定不能进入快照。本文不另设修改冲突决定的接口。决定创建之后正文若要变化，另建一条新决定。
 
-Worker 只读任务固定的快照。接收时间落在冲突条目窗口内时，读取决定全文，把该字段的 `ObservedAmount.mappingStatus` 写成 `CONFLICT`。同一报文的其他字段继续按自己的条目处理。
+发布时，新快照增加一条冲突条目，指向这个 `conflictDecisionId`。第一次发布的窗口必须等于决定里审核确认的窗口。候选映射不写入映射条目，因此不会变成 `ACTIVE`。
 
-解除冲突时发布另一个新快照：把冲突条目的右端点收到解除时刻，并在同一时刻开始一条新的映射窗口。旧快照里的冲突决定和旧窗口都不改。不通过把多条映射同时标成没有右端点的 `ACTIVE` 来制造冲突。
+发布同一事务还要封存全部候选映射版本，以及这些版本引用的、当时仍未封存的契约版本。封存把 `publicationState` 写成 `SEALED`，并写入该版本的 `bodySha256`。之后该版本整行不能再改，证据也不能再追加。
+
+候选明细只保存已有的 `mappingVersionId` 和当时的 `candidateBodySha256`，不复制整份映射配置。映射正文仍在原来的版本行和证据行。冲突决定自己的 `bodySha256` 覆盖每一条候选的版本号和正文哈希。还原历史决定时，先核对候选哈希，再读取那一版映射正文。缺行或哈希不一致，就视为快照损坏。
+
+其他草稿受到的影响如下：
+
+- 同一个 `mappingVersionId` 上还没写完的编辑会失败，返回 `VERSION_SEALED`。要改规则必须新建映射版本。新版本不会自动进入已经封存的冲突决定。
+- 同一个 `mappingId` 的其他版本不封存，那些草稿可以继续编辑。
+- 另一条尚未发布的冲突决定如果引用同一版本，且候选哈希仍然一致，以后可以发布。它不能再改这个版本的正文。
+- 发布前已经审核通过的同一版本，以后仍可以进入映射条目，但窗口不能和冲突窗口重叠。没有审核通过的版本不能因为被封存就变成生效映射。
+
+发布时如果版本正文已经和候选哈希不一致，整笔回滚，错误是 `CANDIDATE_BODY_CHANGED`。两条并发写入用版本行上的 `rowVersion` 判断先后，不使用数据库锁。后写入的一方得到 `VERSION_SEALED` 或 `CANDIDATE_BODY_CHANGED`。
+
+Worker 只读任务固定的快照。接收时间落在冲突条目窗口内时，读取决定、候选和证据，把该字段的 `ObservedAmount.mappingStatus` 写成 `CONFLICT`。同一报文的其他字段继续按自己的条目处理。
+
+解除冲突时发布另一个新快照：把冲突条目的右端点收到解除时刻，并在同一时刻开始一条新的映射窗口。旧决定、候选哈希和旧快照都不改。不通过把多条映射同时标成没有右端点的 `ACTIVE` 来制造冲突。
 
 ## 8. 时间模型
 
@@ -178,7 +193,7 @@ Worker 只读任务固定的快照。接收时间落在冲突条目窗口内时�
 
 拆开是因为三种条目的必填标识不同。一张表只能靠空值或假 ID 混合它们，数据库就无法强制“映射条目必须有映射版本、冲突条目必须有冲突决定”。
 
-批次和全部条目在同一个事务中插入，状态直接是 `PUBLISHED`。失败整笔回滚。父批次唯一。批次保存三类条目的合计数量和 `contentSha256`。哈希覆盖目录版本 ID、三类条目的标识、窗口、生命周期和各自正文哈希。Worker 重算后不一致就拒绝执行。
+批次和全部条目在同一个事务中插入，状态直接是 `PUBLISHED`。失败整笔回滚。父批次唯一。批次保存三类条目的合计数量和 `contentSha256`。哈希的字段顺序、排序和空值写法见第 14 节。冲突候选不单独计入 `itemCount`，它们的正文哈希已经算进冲突决定的 `bodySha256`。Worker 重算后不一致就拒绝执行，不改读最新配置，也不补写快照。
 
 新发布不修改旧批次。新快照复制父快照的全部历史窗口。退役只在新快照里给被退役的那条补上右端点。
 
@@ -192,7 +207,7 @@ Worker 只读任务固定的快照。接收时间落在冲突条目窗口内时�
 4. 以父快照的全部条目为底稿。历史窗口原样复制。本次接上的新窗口，只在新快照里把前一条的右端点写成新窗口的起点，并把该条标成 `RETIRED`。不删除历史条目，也不回写旧快照。
 5. 把同一契约版本、同一字段的映射窗口和冲突窗口放在一起排序。后一段起点早于前一段终点，或前一段没有终点又存在后一段，就拒绝。冲突决定第一次进入快照时，条目窗口必须等于决定正文里审核确认的窗口。以后的快照只能把冲突条目的右端点提前，不能改起点，也不能晚于决定正文里的右端点。Worker 按快照条目的窗口匹配；决定正文保留审核当时的窗口。
 6. 插入 `PUBLISHED` 批次、全部条目和审计。
-7. 把首次进入快照的契约版本、映射版本和冲突决定改为 `SEALED`，写入正文哈希。已经封存的行不更新。
+7. 把首次进入快照的契约版本、映射版本和冲突决定改为 `SEALED`，写入正文哈希。发布冲突决定时，同时封存全部候选映射版本及其仍未封存的契约版本。已经封存的行不更新。候选哈希不一致则整笔回滚。
 
 后一个并发事务因为父批次唯一而失败，不留下半成品。回滚是按目标历史快照的视图再发布一个新快照，历史快照不改。
 
@@ -204,10 +219,10 @@ Worker 只读任务固定的快照。接收时间落在冲突条目窗口内时�
 
 | 对象 | 职责 |
 | --- | --- |
-| `amount_type_catalog_release` | 一个 `catalogVersionId` 和整份目录的指纹 |
+| `amount_type_catalog_release` | 一个 `catalogVersionId`、条目数量和整份目录的指纹 |
 | `amount_type_catalog_entry` | 该版本中每个类型编码的生命周期、映射资格、语义状态和聚合策略 |
 
-目录版本一旦写下就不能改条目。类型从 `DRAFT` 变成 `ACTIVE` 时，封存一份新目录，不回写旧目录。映射批次记录 `typeCatalogVersionId`。旧批次仍指向旧目录，所以旧快照不受后来的类型状态变化影响。
+目录版本一旦写下就不能改条目。封存时必须包含 06-03-02-01 当前全部 39 个类型编码，`itemCount` 必须等于条目行数。类型从 `DRAFT` 变成 `ACTIVE` 时，封存一份新目录，不回写旧目录。映射批次记录 `typeCatalogVersionId`。旧批次仍指向旧目录，所以旧快照不受后来的类型状态变化影响。
 
 Worker 不单独再选“最新目录”。它只跟随任务固定的快照，再读取该快照上的目录版本。因此重试和另一个 Worker 看到的类型资格与快照内容一致。
 
@@ -329,7 +344,9 @@ CREATE TABLE amount_mapping_version (
     'FORBIDDEN', 'SAME_TYPE_AFTER_CONFIRMATION', 'RULE_CONTROLLED', 'NOT_APPLICABLE')),
   CONSTRAINT ck_mapping_disposition CHECK (candidate_disposition IN (
     '', 'SINGLE_CANDIDATE', 'MULTI_CANDIDATE', 'HOLD_UNIDENTIFIED',
-    'CONFLICTING_CANDIDATES', 'NO_AMOUNT', 'BLOCKED_BY_ELIGIBILITY'))
+    'CONFLICTING_CANDIDATES', 'NO_AMOUNT', 'BLOCKED_BY_ELIGIBILITY')),
+  CONSTRAINT ck_mapping_sealed_hash CHECK (
+    publication_state <> 'SEALED' OR body_sha256 <> '')
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
 
 CREATE TABLE amount_mapping_evidence (
@@ -365,13 +382,17 @@ CREATE TABLE mapping_conflict_decision (
   KEY idx_conflict_field (contract_version_id, field_path, publication_state),
   CONSTRAINT ck_conflict_publication CHECK (publication_state IN ('DRAFT', 'SEALED')),
   CONSTRAINT ck_conflict_approval CHECK (approval_status IN (
-    'NOT_SUBMITTED', 'IN_REVIEW', 'APPROVED', 'REJECTED'))
+    'NOT_SUBMITTED', 'IN_REVIEW', 'APPROVED', 'REJECTED')),
+  CONSTRAINT ck_conflict_sealed_hash CHECK (
+    publication_state <> 'SEALED' OR body_sha256 <> '')
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
 
 CREATE TABLE mapping_conflict_candidate (
   conflict_decision_id VARCHAR(64) NOT NULL,
   mapping_version_id BIGINT NOT NULL,
-  PRIMARY KEY (conflict_decision_id, mapping_version_id)
+  candidate_body_sha256 CHAR(64) NOT NULL,
+  PRIMARY KEY (conflict_decision_id, mapping_version_id),
+  CONSTRAINT ck_candidate_hash_present CHECK (candidate_body_sha256 <> '')
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
 
 CREATE TABLE mapping_conflict_evidence (
@@ -387,10 +408,12 @@ CREATE TABLE mapping_conflict_evidence (
 
 CREATE TABLE amount_type_catalog_release (
   catalog_version_id VARCHAR(64) NOT NULL,
+  item_count INT NOT NULL,
   content_sha256 CHAR(64) NOT NULL,
   sealed_at DATETIME(3) NOT NULL,
   PRIMARY KEY (catalog_version_id),
-  UNIQUE KEY uk_type_catalog_sha256 (content_sha256)
+  UNIQUE KEY uk_type_catalog_sha256 (content_sha256),
+  CONSTRAINT ck_type_catalog_count CHECK (item_count > 0)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
 
 CREATE TABLE amount_type_catalog_entry (
@@ -404,7 +427,11 @@ CREATE TABLE amount_type_catalog_entry (
   CONSTRAINT ck_type_catalog_life CHECK (type_lifecycle_status IN ('DRAFT', 'ACTIVE', 'RETIRED')),
   CONSTRAINT ck_type_catalog_eligibility CHECK (mapping_eligibility IN (
     'ALLOWED_IF_CONTRACT_DEFINES', 'NOT_UNTIL_CONFIRMED', 'DISALLOWED',
-    'ALLOWED_AS_UNIDENTIFIED', 'CONFLICT_ONLY'))
+    'ALLOWED_AS_UNIDENTIFIED', 'CONFLICT_ONLY')),
+  CONSTRAINT ck_type_catalog_semantic CHECK (semantic_status IN (
+    '部分确认', '待平台确认', '待业务确认', '待财务确认', '存在冲突', '无法验证')),
+  CONSTRAINT ck_type_catalog_aggregation CHECK (aggregation_policy IN (
+    'FORBIDDEN', 'SAME_TYPE_AFTER_CONFIRMATION', 'RULE_CONTROLLED', 'NOT_APPLICABLE'))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
 
 CREATE TABLE mapping_publish_batch (
@@ -499,36 +526,339 @@ CREATE TABLE amount_mapping_audit_log (
 
 ## 13. 管理 API 设计
 
-查询用 GET，变更用 POST。权限仍是建议角色。每个变更都带 `requestId`。
+查询用 GET，变更用 POST。下面的角色只是调用约定，不是已经实现的账号、权限或审批系统。服务当前能够强制的是：变更请求必须带 `operatorId`，审核人必须是另一名操作者。`actorRole` 写入审计，供以后的账号系统对照。
 
-| 动作 | 方法与路径 | 成功时返回 | 主要错误 |
-| --- | --- | --- | --- |
-| 创建契约 | `POST /api/admin/source-contracts` | `contractId` | `CONTRACT_DUPLICATE` |
-| 查询契约 | `GET /api/admin/source-contracts` | 契约列表 | 无 |
-| 新增契约版本 | `POST /api/admin/source-contracts/{contractId}/versions` | 新建的或已存在的 `contractVersionId` | `VERSION_SEALED` |
-| 创建映射草稿 | `POST /api/admin/amount-mappings` | `mappingId` 和草稿版本 | `TYPE_UNKNOWN` |
-| 编辑草稿 | `POST /api/admin/amount-mappings/{mappingId}/versions/{mappingVersion}/edit` | 新的 `rowVersion` | `VERSION_SEALED` |
-| 校验 | `POST /api/admin/amount-mappings/{mappingId}/versions/{mappingVersion}/validate` | 阻断项 | `MAPPING_NOT_FOUND` |
-| 提交审核和审核 | `POST /api/admin/amount-mappings/{mappingId}/versions/{mappingVersion}/submit-review` 与 `/review` | 审核状态 | `REVIEWER_IS_AUTHOR` |
-| 创建冲突决定 | `POST /api/admin/mapping-conflict-decisions` | `conflictDecisionId` | `CANDIDATE_VERSION_UNKNOWN` |
-| 审核冲突决定 | `POST /api/admin/mapping-conflict-decisions/{conflictDecisionId}/review` | 审核结论 | `REVIEWER_IS_AUTHOR` |
-| 封存类型目录 | `POST /api/admin/amount-type-catalogs` | `catalogVersionId` | `CATALOG_DUPLICATE` |
-| 发布快照 | `POST /api/admin/mapping-snapshots/publish` | 新的 `snapshotId` | `TYPE_NOT_ACTIVE`、`ELIGIBILITY_BLOCKED`、`WINDOW_OVERLAP`、`PUBLISH_PARENT_CONFLICT` |
-| 发布冲突决定 | `POST /api/admin/mapping-snapshots/publish-conflict` | 新的 `snapshotId` | `CONFLICT_NOT_APPROVED`、`WINDOW_OVERLAP` |
-| 退役 | `POST /api/admin/mapping-snapshots/retire` | 新的 `snapshotId`。新快照给旧映射补上右端点 | `RULE_NOT_IN_PARENT_SNAPSHOT` |
-| 读取快照 | `GET /api/admin/mapping-snapshots/{snapshotId}` | 批次、三类条目、目录版本和哈希 | `SNAPSHOT_NOT_FOUND` |
-| 回滚 | `POST /api/admin/mapping-snapshots/rollback` | 新的 `snapshotId` | `TARGET_SNAPSHOT_NOT_PUBLISHED` |
-| 审计 | `GET /api/admin/amount-mappings/audit` | 作者、审核人、角色和批次号 | 无 |
+建议角色是 `EDITOR`、`REVIEWER`、`PUBLISHER`。没有 `operatorId` 的变更返回 `OPERATOR_REQUIRED`，不写任何行。
 
-发布门槛不变：类型在所引用的目录版本里必须是 `ACTIVE`；资格不能是 `NOT_UNTIL_CONFIRMED`、`DISALLOWED` 或 `CONFLICT_ONLY`；业务发布的语义状态必须是 `部分确认`，并且没有未排除的第二种解释。`ALLOWED_AS_UNIDENTIFIED` 只用于 `AMT.UNK.UNIDENTIFIED`，保存后的执行状态仍是 `UNMAPPED`。单位、币种或精度未知时只能保持 `NO_CONVERT`，不能补成元、分或人民币。只靠 E4、E5、E6 不能发布。
+响应外层是建议形状，仓库里还没有这个类：
 
-## 14. Worker 快照读取与匹配
+| 字段 | 含义 |
+| --- | --- |
+| `success` | `true` 或 `false` |
+| `data` | 成功时的业务内容。失败时为空对象 |
+| `errorCode` | 成功时为空字符串。失败时是下表中的代码 |
 
-core 只定义按 `snapshotId` 读取快照的端口。Worker 装配实现，不引用 Admin 内部类。
+幂等键是 `requestId + eventType + aggregateType + aggregateId`，四列都非空。同一键再次提交时返回第一次的结果，不写第二份数据。服务不能证明两次内容相同时返回 `REQUEST_REUSED`，也不生成新快照。每个变更接口只使用一个数据库事务，任何失败都整笔回滚。查询不写库。
 
-新任务第一次开始时，读取没有子批次的最新已发布快照，把 `snapshotId` 写入任务。重试和事后回看都用这个标识，不改读最新快照。新到达的迟到报文也是这样固定当时最新快照，再用 `receivedAt` 命中其中的历史窗口。观测记录同时保存这个 `snapshotId`。原快照哈希不一致或目录条目缺失时，任务失败，不更换快照。
+发布类接口成功时，`data` 至少包含 `snapshotId`、`parentSnapshotId`、`contentSha256`、`itemCount` 和 `publishResult`。`publishResult` 固定为 `PUBLISHED`。
 
-多个 Worker 对同一 `snapshotId` 读到同一批条目和同一个 `typeCatalogVersionId`。
+### 创建契约
+
+`POST /api/admin/source-contracts`
+
+请求：`requestId`、`operatorId`、`actorRole`、`platform`、`sourceSystem`、`sourceInterface`、`sourceMessageType`、`sourceType`。没有消息类型时传空字符串。
+
+成功：`contractId`。
+
+错误：`OPERATOR_REQUIRED`、`CONTRACT_DUPLICATE`、`SOURCE_TYPE_UNKNOWN`。
+
+事件：`CREATE_CONTRACT`。聚合是 `SOURCE_CONTRACT`，聚合 ID 使用 `requestId`。
+
+事务：插入契约家族和一条审计。身份重复时回滚。
+
+### 查询契约
+
+`GET /api/admin/source-contracts`
+
+请求参数：`platform`、`sourceType`，都可以空，表示不按该项过滤。
+
+成功：契约家族列表。每项含 `contractId`、身份五段和 `familyStatus`。
+
+错误：无写入错误。参数无法识别时返回 `QUERY_INVALID`。
+
+幂等：查询不生成键，重复查询不改变数据。
+
+事务：只读。
+
+### 创建契约版本
+
+`POST /api/admin/source-contracts/{contractId}/versions`
+
+请求：`requestId`、`operatorId`、`actorRole`、`contractVersion`、`evidenceStatus`、`semanticStatus`、`sourceReference`、`contractEffectiveFrom`、`contractEffectiveTo`、`evidences`。官方没有版本号时，`contractVersion` 传“未提供”。
+
+成功：`contractVersionId`、`sourceRevision`、`bodySha256`、`result`。`result` 为 `CREATED` 或 `EXISTING`。指纹已存在时返回原版本，不新增修订。
+
+错误：`OPERATOR_REQUIRED`、`CONTRACT_NOT_FOUND`、`VERSION_SEALED`、`EVIDENCE_INVALID`。
+
+事件：`CREATE_CONTRACT_VERSION`。聚合是 `SOURCE_CONTRACT`，聚合 ID 是 `contractId`。
+
+事务：计算第 14 节的契约正文哈希。哈希已存在则只写审计并返回原 ID。否则插入新版本、证据和审计。已封存版本不在这个接口改正文。
+
+### 创建映射草稿
+
+`POST /api/admin/amount-mappings`
+
+请求：`requestId`、`operatorId`、`actorRole`、`platform`、`contractId`、`contractVersionId`、`fieldPath`、`sourceDataType`、`candidateAmountTypeCode`、`candidateDisposition`、`mappingEligibility`、`semanticStatus`、`evidenceStatus`、`unitConstraint`、`currencyConstraint`、`precisionConstraint`、`transformationPolicy`、`aggregationPolicy`、`evidences`。
+
+成功：`mappingId`、`mappingVersionId`、`mappingVersion`、`rowVersion`。
+
+错误：`OPERATOR_REQUIRED`、`CONTRACT_VERSION_NOT_FOUND`、`TYPE_UNKNOWN`、`MAPPING_DUPLICATE`。
+
+事件：`CREATE_MAPPING`。聚合是 `AMOUNT_MAPPING`，聚合 ID 使用 `requestId`。
+
+事务：按身份查找或创建 `mappingId`，再插入一条 `DRAFT` 版本和证据。作者写 `operatorId`。这个接口不发布，也不封存。
+
+### 编辑映射草稿
+
+`POST /api/admin/amount-mappings/{mappingId}/versions/{mappingVersion}/edit`
+
+请求：`requestId`、`operatorId`、`actorRole`、`rowVersion`，以及允许修改的正文字段和证据全量。路径、目标类型和契约版本不在这里修改；那些变化要新建 `mappingId`。
+
+成功：新的 `rowVersion`。
+
+错误：`OPERATOR_REQUIRED`、`MAPPING_NOT_FOUND`、`VERSION_SEALED`、`VERSION_CONFLICT`。
+
+事件：`EDIT_DRAFT`。聚合是 `MAPPING_VERSION`，聚合 ID 是 `mappingVersionId`。
+
+事务：只更新 `publicationState = DRAFT` 且 `rowVersion` 相符的一行，并替换该版本的证据。封存行匹配不到，回滚。冲突候选被发布封存后，这个接口拒绝继续修改。
+
+### 校验映射
+
+`POST /api/admin/amount-mappings/{mappingId}/versions/{mappingVersion}/validate`
+
+请求：`operatorId`、`typeCatalogVersionId`。不需要 `requestId`，因为不写配置。
+
+成功：`valid`，以及 `blockingErrors`。阻断项使用本节的错误码。
+
+错误：`MAPPING_NOT_FOUND`、`CATALOG_NOT_FOUND`。
+
+幂等：重复调用不写版本、快照或审计。
+
+事务：只读。它不代替发布事务，发布时仍要再检查一次。
+
+### 提交审核
+
+`POST /api/admin/amount-mappings/{mappingId}/versions/{mappingVersion}/submit-review`
+
+请求：`requestId`、`operatorId`、`actorRole`、`rowVersion`。
+
+成功：`approvalStatus = IN_REVIEW`、新的 `rowVersion`。
+
+错误：`OPERATOR_REQUIRED`、`VERSION_SEALED`、`VERSION_CONFLICT`、`APPROVAL_STATE_INVALID`。
+
+事件：`SUBMIT_REVIEW`。聚合是 `MAPPING_VERSION`，聚合 ID 是 `mappingVersionId`。
+
+事务：把 `NOT_SUBMITTED` 改为 `IN_REVIEW`，写入 `submittedBy`。其他状态回滚。
+
+### 审核映射
+
+`POST /api/admin/amount-mappings/{mappingId}/versions/{mappingVersion}/review`
+
+请求：`requestId`、`operatorId`、`actorRole`、`rowVersion`、`reviewDecision`。`reviewDecision` 只能是 `APPROVED` 或 `REJECTED`。
+
+成功：`approvalStatus`、`reviewedBy`、新的 `rowVersion`。
+
+错误：`OPERATOR_REQUIRED`、`REVIEWER_IS_AUTHOR`、`VERSION_SEALED`、`VERSION_CONFLICT`、`APPROVAL_STATE_INVALID`。
+
+事件：决定为通过时是 `APPROVE`，否则是 `REJECT`。聚合是 `MAPPING_VERSION`，聚合 ID 是 `mappingVersionId`。
+
+事务：审核人必须不同于 `authorOperatorId`。只接受当前状态 `IN_REVIEW`。通过不表示已经发布，也不把类型改成 `ACTIVE`。
+
+### 创建冲突决定
+
+`POST /api/admin/mapping-conflict-decisions`
+
+请求：`requestId`、`operatorId`、`actorRole`、`contractVersionId`、`fieldPath`、`conflictType`、`reason`、`approvedEffectiveFrom`、`approvedEffectiveTo`、`candidates`、`evidences`。每个候选只传 `mappingVersionId`。服务读取该版本当前正文并计算哈希，调用方不传哈希。
+
+成功：`conflictDecisionId`、每个候选的 `mappingVersionId` 和 `candidateBodySha256`。
+
+错误：`OPERATOR_REQUIRED`、`CANDIDATE_VERSION_UNKNOWN`、`CANDIDATE_TOO_FEW`、`CONTRACT_VERSION_MISMATCH`。候选少于两个，或候选不属于这个契约版本和字段时回滚。
+
+事件：`CREATE_CONFLICT_DECISION`。聚合是 `CONFLICT_DECISION`，聚合 ID 使用 `requestId`。
+
+事务：插入决定头、候选行和证据行。此时还不封存候选版本。决定创建后不提供修改接口。
+
+### 审核冲突决定
+
+`POST /api/admin/mapping-conflict-decisions/{conflictDecisionId}/review`
+
+请求：`requestId`、`operatorId`、`actorRole`、`rowVersion`、`reviewDecision`。
+
+成功：`approvalStatus`、`reviewedBy`。
+
+错误：`OPERATOR_REQUIRED`、`REVIEWER_IS_AUTHOR`、`DECISION_NOT_FOUND`、`VERSION_SEALED`、`VERSION_CONFLICT`、`APPROVAL_STATE_INVALID`。已经通过或驳回的决定不能再次审核。
+
+事件：`REVIEW_CONFLICT`。聚合是 `CONFLICT_DECISION`，聚合 ID 是 `conflictDecisionId`。
+
+事务：只接受当前状态 `NOT_SUBMITTED`。审核人不是作者时，把决定写成通过或驳回。其他状态返回 `APPROVAL_STATE_INVALID`。这一步不封存候选，也不发布快照。驳回后的决定不能进入快照。
+
+### 封存类型目录
+
+`POST /api/admin/amount-type-catalogs`
+
+请求：`requestId`、`operatorId`、`actorRole`、`entries`。每项含 `typeCode`、`typeLifecycleStatus`、`mappingEligibility`、`semanticStatus`、`aggregationPolicy`。
+
+成功：`catalogVersionId`、`itemCount`、`contentSha256`、`result`。内容已存在时 `result = EXISTING`。
+
+错误：`OPERATOR_REQUIRED`、`CATALOG_INCOMPLETE`、`CATALOG_DUPLICATE`。条目不是 06-03-02-01 的 39 个编码时返回 `CATALOG_INCOMPLETE`。
+
+事件：`SEAL_CATALOG`。聚合是 `TYPE_CATALOG`，聚合 ID 使用 `requestId`。
+
+事务：按第 14 节计算目录哈希。哈希已存在则返回原版本。否则一次插入目录头、39 条条目和审计。插入后不提供修改接口。
+
+### 发布快照
+
+`POST /api/admin/mapping-snapshots/publish`
+
+请求：`requestId`、`operatorId`、`actorRole`、`parentSnapshotId`、`typeCatalogVersionId`、`changes`。第一个快照的父 ID 是 `ROOT`。
+
+`changes` 的每一项是两种之一：
+
+| `changeType` | 内容 | 作用 |
+| --- | --- | --- |
+| `ADD_MAPPING` | `mappingVersionId`、`effectiveFrom`、`effectiveTo` | 在新快照增加一条映射窗口 |
+| `CLOSE_CONFLICT` | `conflictDecisionId`、`effectiveTo` | 只在新快照里把冲突窗口的右端点提前 |
+
+成功：`snapshotId`、`parentSnapshotId`、`contentSha256`、`itemCount`、`publishResult`。
+
+错误：`OPERATOR_REQUIRED`、`PARENT_SNAPSHOT_NOT_FOUND`、`PUBLISH_PARENT_CONFLICT`、`CATALOG_NOT_FOUND`、`TYPE_NOT_ACTIVE`、`ELIGIBILITY_BLOCKED`、`SEMANTIC_NOT_CONFIRMED`、`EVIDENCE_INSUFFICIENT`、`MAPPING_NOT_APPROVED`、`WINDOW_OVERLAP`、`VERSION_SEALED`。
+
+事件：`PUBLISH`。聚合是 `MAPPING_SNAPSHOT`，聚合 ID 是 `parentSnapshotId`。
+
+事务：执行第 10 节的全部步骤。新快照复制父快照的历史窗口。失败不留批次。
+
+### 发布冲突决定
+
+`POST /api/admin/mapping-snapshots/publish-conflict`
+
+请求：`requestId`、`operatorId`、`actorRole`、`parentSnapshotId`、`typeCatalogVersionId`、`conflictDecisionId`。窗口以决定正文为准，请求里不能另传窗口。
+
+成功：`snapshotId`、`parentSnapshotId`、`contentSha256`、`itemCount`、`publishResult`。
+
+错误：`OPERATOR_REQUIRED`、`CONFLICT_NOT_APPROVED`、`CANDIDATE_BODY_CHANGED`、`WINDOW_OVERLAP`、`PUBLISH_PARENT_CONFLICT`、`PARENT_SNAPSHOT_NOT_FOUND`。
+
+事件：`PUBLISH_CONFLICT`。聚合是 `CONFLICT_DECISION`，聚合 ID 是 `conflictDecisionId`。
+
+事务：核对候选正文哈希，封存候选映射版本和相关契约版本，插入新的 `PUBLISHED` 快照。决定未通过审核、候选已被改写或窗口重叠时整笔回滚。
+
+### 退役
+
+`POST /api/admin/mapping-snapshots/retire`
+
+请求：`requestId`、`operatorId`、`actorRole`、`parentSnapshotId`、`mappingVersionId`、`effectiveTo`。
+
+成功：`snapshotId`、`parentSnapshotId`、`contentSha256`、`itemCount`、`publishResult`。
+
+错误：`OPERATOR_REQUIRED`、`RULE_NOT_IN_PARENT_SNAPSHOT`、`WINDOW_OVERLAP`、`PUBLISH_PARENT_CONFLICT`。
+
+事件：`RETIRE`。聚合是 `MAPPING_VERSION`，聚合 ID 是 `mappingVersionId`。
+
+事务：父快照中该版本必须是没有右端点的 `ACTIVE`。新快照复制全部历史条目，只把这一条补上右端点并改为 `RETIRED`。`effectiveTo` 必须晚于起点，并且不穿过下一段窗口。
+
+### 回滚
+
+`POST /api/admin/mapping-snapshots/rollback`
+
+请求：`requestId`、`operatorId`、`actorRole`、`parentSnapshotId`、`targetSnapshotId`。不接收新的目录版本。新快照使用目标快照原来的 `typeCatalogVersionId`。
+
+成功：`snapshotId`、`parentSnapshotId`、`contentSha256`、`itemCount`、`publishResult`。这里的 `snapshotId` 是新批次，不是目标批次。
+
+错误：`OPERATOR_REQUIRED`、`TARGET_SNAPSHOT_NOT_PUBLISHED`、`PUBLISH_PARENT_CONFLICT`。
+
+事件：`ROLLBACK`。聚合是 `MAPPING_SNAPSHOT`，聚合 ID 是 `targetSnapshotId`。
+
+事务：把目标快照的三类条目复制到新批次。目标快照和中间快照都不修改，已封存版本也不重新打开。
+
+### 查询快照
+
+`GET /api/admin/mapping-snapshots/{snapshotId}`
+
+请求：路径中的 `snapshotId`。
+
+成功：第 14 节的 `MappingSnapshot`。任何部分缺失或哈希不一致时成功标志为假，错误码是 `SNAPSHOT_INTEGRITY_FAILED`。
+
+错误：`SNAPSHOT_NOT_FOUND`、`SNAPSHOT_INTEGRITY_FAILED`。
+
+幂等：只读。重复查询不修复数据。
+
+事务：只读。Worker 不调用这个 HTTP 接口，但读取端口返回同一个对象。
+
+### 查询历史
+
+`GET /api/admin/mapping-snapshots/{snapshotId}/history`
+
+请求：路径中的 `snapshotId`。
+
+成功：从该快照沿 `parentSnapshotId` 走到 `ROOT` 的列表。每项含 `snapshotId`、`parentSnapshotId`、`typeCatalogVersionId`、`contentSha256`、`itemCount`、`createdAt`。
+
+错误：`SNAPSHOT_NOT_FOUND`。父 ID 为 `ROOT` 时停止，不把 `ROOT` 当成缺失批次。链上其他父批次缺失时返回 `SNAPSHOT_INTEGRITY_FAILED`，不用最新快照补齐。
+
+幂等：只读。
+
+事务：只读。
+
+### 审计查询
+
+`GET /api/admin/amount-mappings/audit`
+
+请求参数：`aggregateType`、`aggregateId`、`requestId`。至少提供 `requestId` 或成对提供聚合类型和聚合 ID。
+
+成功：审计行列表，含操作者、角色、来源状态、目标状态、原因、`publishBatchId` 和 `createdAt`。
+
+错误：`QUERY_INVALID`。
+
+幂等：只读。
+
+事务：只读。
+
+发布门槛不变。类型在所引用目录里必须是 `ACTIVE`。资格不能是 `NOT_UNTIL_CONFIRMED`、`DISALLOWED` 或 `CONFLICT_ONLY`。业务发布的语义状态必须是 `部分确认`，并且没有未排除的第二种解释。`ALLOWED_AS_UNIDENTIFIED` 只用于 `AMT.UNK.UNIDENTIFIED`，保存后的执行状态仍是 `UNMAPPED`。单位、币种或精度未知时只能保持 `NO_CONVERT`，不能补成元、分或人民币。只靠 E4、E5、E6 不能发布。
+
+## 14. Worker 快照读取、校验与匹配
+
+`MappingSnapshot` 是 Worker 和查询接口共用的读取对象。它不是新的业务聚合，也不对应新的总表。
+
+| 部分 | 来源 | 缺少时 |
+| --- | --- | --- |
+| `publishBatch` | `mapping_publish_batch` | 拒绝执行 |
+| `contractItems` | 契约条目 | 数量对不上就拒绝 |
+| `mappingItems` | 映射条目 | 数量对不上就拒绝 |
+| `conflictItems` | 冲突条目 | 数量对不上就拒绝 |
+| `conflictDecisions` | 冲突条目引用的决定头 | 读不到或未封存就拒绝 |
+| `conflictCandidates` | 这些决定的候选行 | 缺少候选或哈希为空就拒绝 |
+| `conflictEvidence` | 这些决定的证据行 | 重算决定哈希失败就拒绝 |
+| `contractVersions` | 条目和候选引用的契约版本及证据 | 未封存或正文哈希不符就拒绝 |
+| `mappingVersions` | 映射条目和候选引用的映射版本及证据 | 未封存或正文哈希不符就拒绝 |
+| `typeCatalog` | 批次指向的目录头 | 读不到就拒绝 |
+| `typeCatalogEntries` | 该目录的全部条目 | 数量或哈希不符就拒绝 |
+
+`itemCount` 只等于契约条目、映射条目、冲突条目三项之和。候选、证据、版本正文和目录条目都不重复计入。
+
+### 规范字节
+
+所有哈希都是规范字节的 SHA-256，结果写成 64 位小写十六进制。编码是 UTF-8，不带 BOM，也不做 Unicode 归一化。字符串按库存原值进入字节，不另做 trim。
+
+一条记录内部用单元分隔符 `\x1f` 连接字段。多条记录先按指定键排序，再用记录分隔符 `\x1e` 连接。空字符串就是两个分隔符之间没有字符。SQL NULL 和没有右端点都写成两个字符 `\N`，不能写成空字符串，也不能写成一个遥远的时间。时间一律是 UTC，格式为 `yyyy-MM-dd'T'HH:mm:ss.SSS'Z'`，毫秒必须是三位。整数不用前导零。每一种哈希前面加一行固定版本名，避免以后改字段时和旧哈希混淆。
+
+嵌套内容先算自己的哈希。上层只放入这个 64 位哈希，不再把下层正文重抄一遍。下层任何一个参与字段变化，下层哈希变化，上层哈希也变化。
+
+契约版本 `contract-version-v1` 的字段顺序：`contractVersionId`、`contractId`、`contractVersion`、`sourceRevision`、`evidenceStatus`、`semanticStatus`、`sourceReference`、`contractEffectiveFrom`、`contractEffectiveTo`、证据列表。证据按 `evidenceId` 数值升序，每条顺序是 `evidenceId`、`evidenceStatus`、`sourceReference`、`quotedNote`。封存状态、行版本和时间戳不进入正文哈希，因为封存动作本身不能把正文算成另一份。
+
+映射版本 `mapping-version-v1` 的字段顺序：`mappingVersionId`、`mappingId`、`mappingVersion`、`contractVersionId`、`platform`、`fieldPath`、`sourceDataType`、`candidateAmountTypeCode`、`candidateDisposition`、`mappingEligibility`、`semanticStatus`、`evidenceStatus`、`unitConstraint`、`currencyConstraint`、`precisionConstraint`、`transformationPolicy`、`aggregationPolicy`、证据列表。证据排序和字段与契约证据相同。审核状态不进入正文哈希。封存后审核状态也不允许再改，所以不能靠改审核字段绕过哈希。
+
+冲突决定 `conflict-decision-v1` 的字段顺序：`conflictDecisionId`、`contractVersionId`、`fieldPath`、`conflictType`、`reason`、`approvedEffectiveFrom`、`approvedEffectiveTo`、`authorOperatorId`、`reviewedBy`、`reviewDecision`、候选列表、证据列表。候选按 `mappingVersionId` 升序，每条是 `mappingVersionId`、`candidateBodySha256`。证据按 `evidenceId` 升序。
+
+类型目录 `type-catalog-v1` 的字段顺序：`itemCount`，然后按 `typeCode` 字节升序排列条目。每条是 `typeCode`、`typeLifecycleStatus`、`mappingEligibility`、`semanticStatus`、`aggregationPolicy`。
+
+快照 `snapshot-v1` 的字段顺序：`typeCatalogVersionId`、目录 `contentSha256`、契约条目、映射条目、冲突条目。契约条目按 `contractVersionId` 升序，字段是 `contractVersionId`、`bodySha256`。映射条目按 `mappingVersionId` 升序，字段是 `mappingVersionId`、`contractVersionId`、`fieldPath`、`lifecycleInSnapshot`、`mappingEffectiveFrom`、`mappingEffectiveTo`、`bodySha256`。冲突条目按 `conflictDecisionId` 升序，字段是 `conflictDecisionId`、`contractVersionId`、`fieldPath`、`conflictEffectiveFrom`、`conflictEffectiveTo`、`bodySha256`。
+
+### 完整性校验
+
+Worker 只按任务上的 `snapshotId` 装载。任何一步失败都停止任务。不允许改读最新快照，不允许跳过坏掉的部分，也不允许写回修复。
+
+1. 读取 `publishBatch`。不存在则失败。
+2. 读取三类条目。三项数量之和必须等于 `itemCount`。
+3. 按 `snapshot-v1` 重算哈希，必须等于 `contentSha256`。
+4. 读取目录头和全部目录条目。条目数必须等于目录 `itemCount`，重算结果必须等于目录 `contentSha256`，目录 ID 必须等于批次上的 `typeCatalogVersionId`。
+5. 每条契约条目都能读到已封存契约版本，重算正文哈希必须同时等于条目和版本行上的 `bodySha256`。
+6. 每条映射条目都能读到已封存映射版本，重算结果必须同时等于条目和版本行上的 `bodySha256`。
+7. 每条冲突条目都能读到已封存决定。候选至少两条。每条候选都能读到已封存映射版本，版本重算哈希必须等于 `candidateBodySha256`，也必须等于版本行上的 `bodySha256`。决定按 `conflict-decision-v1` 重算后，必须等于决定行和冲突条目上的 `bodySha256`。
+8. 映射条目、冲突条目和候选映射引用的契约版本，都必须出现在该快照的契约条目中。
+
+通过之后才允许按第 8 节匹配。校验失败的任务不能改用另一份快照继续。
+
+新任务第一次开始时，读取没有子批次的最新已发布快照，先做上面的校验，再把 `snapshotId` 写入任务。重试和事后回看都用这个标识。新到达的迟到报文也是先固定当时最新且校验通过的快照，再用 `receivedAt` 命中其中的历史窗口。观测记录同时保存这个 `snapshotId`。
+
+多个 Worker 对同一份通过校验的快照看到同一批条目、同一个目录版本和同一组候选哈希。
 
 匹配使用第 8 节的算法。`processedAt` 不参与选择。`RETIRED` 条目只要窗口包含 `receivedAt` 就命中。
 
@@ -536,7 +866,7 @@ core 只定义按 `snapshotId` 读取快照的端口。Worker 装配实现，不
 
 Pipeline 的顺序不变：原文、原始金额、来源、按固定快照匹配、观测，然后才可能进入已经批准的计算。未经发布的草稿和未确认资格不会进入快照，因此不能进入正式业务计算。
 
-父批次唯一保证并发发布只有一个成功。窗口检查在同一事务内完成。审计继续使用全部非空的幂等键。没有配置表达式，转换策略仍只有 `NO_CONVERT`。
+父批次唯一保证并发发布只有一个成功。窗口检查和候选封存在同一事务内完成。审计继续使用全部非空的幂等键。没有配置表达式，转换策略仍只有 `NO_CONVERT`。
 
 ## 16. 测试与验收
 
@@ -549,32 +879,43 @@ Pipeline 的顺序不变：原文、原始金额、来源、按固定快照匹�
 | 左闭右开 | 接收时间等于起点、等于终点 | 起点命中，终点不命中 |
 | 迟到报文 | 接收时间落在 `RETIRED` 窗口，处理时间已经更晚 | 命中该历史映射，不变成 `UNMAPPED` |
 | 没有右端点 | 同一字段两条都不写右端点 | 唯一索引拒绝第二条 |
-| 冲突决定还原 | 发布一条含两个候选和证据的决定 | 能读回 ID、候选、原因、审核人、结论、窗口和哈希 |
-| 解除冲突 | 新快照结束冲突窗口并开始一条映射 | 旧快照的冲突条目不变 |
+| 冲突决定还原 | 发布一条含两个候选和证据的决定 | 能读回决定、候选正文、证据、审核人、窗口和全部哈希 |
+| 候选封存 | 冲突决定发布后编辑候选版本 | `VERSION_SEALED`，旧正文哈希不变 |
+| 其他版本仍可编辑 | 同一 `mappingId` 的另一个版本仍是草稿 | 只有被引用的那个版本封存 |
+| 候选被改写 | 发布前改了候选正文 | `CANDIDATE_BODY_CHANGED`，不产生快照 |
+| 解除冲突 | 新快照结束冲突窗口并开始一条映射 | 旧决定、候选哈希和旧快照不变 |
 | 外部版本重复 | 两次“未提供”但正文指纹不同 | 两个 `sourceRevision` 和两个 `contractVersionId` |
 | 相同正文 | 再次提交同一指纹 | 返回原版本，不新增修订 |
 | 封存后修改 | 修改已进入快照的契约版本 | 被拒绝 |
 | 多个“未提供” | 报文只有外部版本号 | `UNMAPPED`，不猜最新修订 |
 | 目录变化 | 新目录把类型改为 `ACTIVE` 后发布新快照 | 旧快照仍指向旧目录，类型资格不变 |
+| 目录数量 | 条目数和 `itemCount` 不一致 | 封存失败；已封存的目录被改少时 Worker 拒绝 |
 | 重试 | 新快照已发布 | 重试仍用原 `snapshotId` 和原目录版本 |
+| 快照损坏 | 删除一条候选、证据或目录条目 | `SNAPSHOT_INTEGRITY_FAILED`，不改读最新配置，也不自动修复 |
+| 哈希输入稳定 | 同一内容按不同传入顺序计算 | 排序后哈希相同。NULL 和空字符串的哈希不同 |
+| 发布幂等 | 同一发布请求重复提交 | 返回第一个 `snapshotId`，不产生第二个批次 |
 | 草稿类型发布 | 目录中类型仍是 `DRAFT` | 拒绝，不产生业务映射快照 |
 | 未识别计算 | 只有未识别观测 | 执行状态是 `UNMAPPED`，不能进入计算 |
 
 ## 17. 风险和待确认事项
 
-MySQL、账号体系和第一份可发布的类型目录都还没有接受。本文的表不能执行，今天也不能发布业务映射。
+MySQL、账号体系和第一份可发布的类型目录都还没有接受。本文的表不能执行，今天也不能发布业务映射。角色名称不是已经上线的权限系统。
 
 跨映射表和冲突表的窗口重叠依赖发布事务。数据库只保证每类条目各自最多一条没有右端点的记录。实现时必须把两类条目放进同一次检查，不能只依赖唯一索引。
+
+候选正文不复制到新表。历史还原依赖封存后的版本行、证据行和候选哈希始终一起保留。只删其中一层，校验就会失败，这是预期结果，不是允许 Worker 忽略的损坏。
 
 本文没有修改 06-03-01、06-03-02-01 和 06-03-02-02。五种映射资格、三种执行状态和 39 个类型编码保持原定义。
 
 ## 18. 设计结论
 
-同一份快照可以保留同一字段的多个不重叠窗口。迟到报文按接收时间命中其中的历史映射，包括已经标成 `RETIRED` 的窗口。冲突决定以决定头、候选行和证据行保存，可以完整还原，历史快照不因后来解除冲突而被改写。官方没有版本号时，用 `sourceRevision` 和正文指纹管理材料修订。类型目录版本写在发布批次上，旧任务不跟随后来的类型状态。
+同一份快照可以保留同一字段的多个不重叠窗口。迟到报文按接收时间命中其中的历史映射，包括已经标成 `RETIRED` 的窗口。冲突决定保存候选版本号和正文哈希，并在发布时封存候选版本，因此历史决定可以还原当时比较过的映射正文。官方没有版本号时，用 `sourceRevision` 和正文指纹管理材料修订。类型目录版本写在发布批次上，目录自己记录条目数量和指纹。
+
+Worker 只接受完整通过校验的 `MappingSnapshot`。任一数量、正文或哈希对不上，就停止该任务。它不改读最新配置，也不修复快照。
 
 没有发现用配置状态绕过语义确认的路径。类型不是 `ACTIVE`、资格未确认或被禁止、冲突尚未形成已审核决定，都不能进入正式业务映射。
 
-这是第三轮修订稿，用来提交审查。它还不是冻结设计，也没有批准任何生产金额映射。
+这是第四轮修订稿，用来提交审查。它还不是冻结设计，也没有批准任何生产金额映射。
 
 ## 19. 修订记录
 
@@ -583,3 +924,4 @@ MySQL、账号体系和第一份可发布的类型目录都还没有接受。本
 | 初稿 | 建立映射配置、版本、发布准入、建议表结构和 Worker 读取边界 |
 | 第二轮 | 用不可变发布批次替换审计号快照，契约身份加入来源种类 |
 | 第三轮 | 同一快照保留多段不重叠映射窗口。冲突决定单独存全文。契约材料用内部修订号和正文指纹区分。发布批次固定类型目录版本 |
+| 第四轮 | 发布冲突决定时封存候选版本并保存正文哈希。定义快照读取对象和规范哈希。补充管理接口的请求、响应、幂等和事务 |
