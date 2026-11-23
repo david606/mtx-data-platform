@@ -213,7 +213,7 @@ Worker 只读任务固定的快照。接收时间落在冲突条目窗口内时�
 
 请求进入后的顺序：
 
-1. 用 `request-v2` 计算 `requestHash`。哈希覆盖事件名、聚合类型、聚合 ID，以及第 13 节列出的请求字段。证据列表按证据状态、来源、摘录排序。`changes` 按变更类型和目标 ID 排序。
+1. 用第 13 节的 `request-v2` 计算 `requestHash`。字段按该节的固定顺序取值，不按 JSON 出现顺序。集合先按该节的排序键排好；排序键全部相同的元素，编码字节也相同，交换它们不改变哈希。不使用数据库返回顺序、JSON 属性顺序或 Map 迭代顺序。
 2. 插入幂等请求行，状态先写 `PROCESSING`。`responsePayload` 和 `responseSnapshotId` 先写空字符串，`completedAt` 为空。`requestId` 是主键。同一请求号的并发插入只有一个能拿到这行，另一个等待该事务结束。这里用的是主键冲突，不另加 `SELECT FOR UPDATE`。等待超时则本事务回滚并返回 `REQUEST_IN_PROGRESS`，不写快照。
 3. 若请求号已存在，本事务回滚，再读已提交的那一行。哈希不同返回 `REQUEST_REUSED`。哈希相同且状态是 `SUCCEEDED`，原样返回第一次的 `responsePayload`。发布类同时用其中的 `responseSnapshotId` 读取原快照，读不到则返回 `SNAPSHOT_INTEGRITY_FAILED`，不另发一份。对方若已回滚，本事务的插入会成功，由它继续完成本次业务。
 4. 读取父批次。第一个父标识是 `ROOT`。父批次不存在时回滚。
@@ -576,9 +576,57 @@ CREATE TABLE amount_mapping_idempotency_request (
 | `data` | 成功时的业务内容。失败时为空对象 |
 | `errorCode` | 成功时为空字符串。失败时是下表中的代码 |
 
-每个变更接口按第 10 节写入一条幂等请求和一条审计。请求号相同且 `requestHash` 相同，返回第一次的完整 `data`。请求号相同但内容不同，返回 `REQUEST_REUSED`。对方事务尚未结束时返回 `REQUEST_IN_PROGRESS`。查询不写库。失败回滚后不存在可重放的成功行。
+每个变更接口按第 10 节写入一条幂等请求和一条审计。`requestHash` 的算法在下面的 `request-v2` 小节。请求号相同且 `requestHash` 相同，返回第一次的完整 `data`。请求号相同但内容不同，返回 `REQUEST_REUSED`。对方事务尚未结束时返回 `REQUEST_IN_PROGRESS`。缺必填字段、列表为 null、整数为负或时间格式不对时返回 `REQUEST_INVALID`，不写请求行。查询不写库。失败回滚后不存在可重放的成功行。
 
 发布类接口成功时，`data` 至少包含 `snapshotId`、`parentSnapshotId`、`contentSha256`、`itemCount` 和 `publishResult`。`publishResult` 固定为 `PUBLISHED`。
+
+### request-v2 字段顺序
+
+`requestHash` 是 `request-v2` 字节的 SHA-256，64 位小写十六进制。字节规则与第 14 节相同。编码时按下面的固定位置取值，JSON 把字段写成另一种先后顺序，哈希也不变。未知 JSON 字段不进入哈希。
+
+每个变更请求都从这四项开始：
+
+1. 字符串 `request-v2`。
+2. 事件名。
+3. 聚合类型。
+4. 聚合 ID。
+
+然后是该接口的路径参数，再是请求体字段。没有路径参数的接口不补空位。不同事件的字段个数可以不同。`requestId` 只在它被规定为聚合 ID 时进入第 4 项；它不另外再编码一次。
+
+可空时间缺省和 JSON `null` 都编码为 NULL。两者是同一种业务请求。列表必须出现，不能为 null，也不能因为缺省就被改写成空列表。空列表的元素个数是 0。必填字符串、整数缺省或为 null 时返回 `REQUEST_INVALID`。空字符串只允许出现在 `sourceMessageType` 和 `candidateDisposition`。
+
+整数按十进制解析后用 8 字节整数编码，不保留输入里的前导零。`rowVersion` 和 `mappingVersionId` 必须大于或等于 0。路径里的 `mappingVersion` 仍按原始字符串编码。需要 `mappingVersionId` 的聚合 ID，使用解析后的十进制文本，不带前导零。
+
+证据对象的字段顺序是 `evidenceStatus`、`sourceReference`、`quotedNote`。候选对象只有 `mappingVersionId`。目录条目的顺序是 `typeCode`、`typeLifecycleStatus`、`mappingEligibility`、`semanticStatus`、`aggregationPolicy`。`ADD_MAPPING` 的顺序是 `changeType`、`mappingVersionId`、`effectiveFrom`、`effectiveTo`。`CLOSE_CONFLICT` 的顺序是 `changeType`、`conflictDecisionId`、`effectiveTo`。这些对象先按自己的字段顺序拼成字节，再取 SHA-256，列表里放类型 `06` 和这 32 字节。对象内部字段顺序固定，所以嵌套内容变化会改变外层哈希。
+
+证据列表的排序键依次是 `evidenceStatus`、`sourceReference`、`quotedNote`，都按 UTF-8 字节升序。三个键都相同，两条证据的嵌套哈希也相同，谁先谁后都不改变列表字节。候选列表按 `mappingVersionId` 数值升序。同一个决定里重复的 `mappingVersionId` 返回 `REQUEST_INVALID`。目录条目按 `typeCode` 的 UTF-8 字节升序，重复的类型编码同样拒绝。
+
+`changes` 的排序键依次是：
+
+1. `changeType` 的 UTF-8 字节。
+2. 目标 ID。`ADD_MAPPING` 用 `mappingVersionId` 的整数，`CLOSE_CONFLICT` 用 `conflictDecisionId` 的 UTF-8 字节。
+3. `effectiveFrom`。`CLOSE_CONFLICT` 没有起点，这一键按 NULL。
+4. `effectiveTo`。NULL 比任何具体时间都大。
+
+四键都相同的变更，嵌套哈希相同，交换位置不改变字节。不追加数据库序号、JSON 下标或 Map 迭代顺序作为隐藏排序键。
+
+| 事件名 | 聚合类型 | 聚合 ID | 路径参数 | 请求体字段 |
+| --- | --- | --- | --- | --- |
+| `CREATE_CONTRACT` | `SOURCE_CONTRACT` | `requestId` | 无 | `operatorId`、`actorRole`、`platform`、`sourceSystem`、`sourceInterface`、`sourceMessageType`、`sourceType` |
+| `CREATE_CONTRACT_VERSION` | `SOURCE_CONTRACT` | 路径中的 `contractId` | `contractId` | `operatorId`、`actorRole`、`contractVersion`、`evidenceStatus`、`semanticStatus`、`sourceReference`、`contractEffectiveFrom`、`contractEffectiveTo`、`evidences` |
+| `CREATE_MAPPING` | `AMOUNT_MAPPING` | `requestId` | 无 | `operatorId`、`actorRole`、`platform`、`contractId`、`contractVersionId`、`fieldPath`、`sourceDataType`、`candidateAmountTypeCode`、`candidateDisposition`、`mappingEligibility`、`semanticStatus`、`evidenceStatus`、`unitConstraint`、`currencyConstraint`、`precisionConstraint`、`transformationPolicy`、`aggregationPolicy`、`evidences` |
+| `EDIT_DRAFT` | `MAPPING_VERSION` | 解析后的 `mappingVersionId` | `mappingId`、`mappingVersion` | `operatorId`、`actorRole`、`rowVersion`、`sourceDataType`、`candidateDisposition`、`mappingEligibility`、`semanticStatus`、`evidenceStatus`、`unitConstraint`、`currencyConstraint`、`precisionConstraint`、`transformationPolicy`、`aggregationPolicy`、`evidences` |
+| `SUBMIT_REVIEW` | `MAPPING_VERSION` | 解析后的 `mappingVersionId` | `mappingId`、`mappingVersion` | `operatorId`、`actorRole`、`rowVersion` |
+| `APPROVE` 或 `REJECT` | `MAPPING_VERSION` | 解析后的 `mappingVersionId` | `mappingId`、`mappingVersion` | `operatorId`、`actorRole`、`rowVersion`、`reviewDecision`。`reviewDecision` 为 `APPROVED` 时事件名是 `APPROVE`，为 `REJECTED` 时是 `REJECT` |
+| `CREATE_CONFLICT_DECISION` | `CONFLICT_DECISION` | `requestId` | 无 | `operatorId`、`actorRole`、`contractVersionId`、`fieldPath`、`conflictType`、`reason`、`approvedEffectiveFrom`、`approvedEffectiveTo`、`candidates`、`evidences` |
+| `REVIEW_CONFLICT` | `CONFLICT_DECISION` | 路径中的 `conflictDecisionId` | `conflictDecisionId` | `operatorId`、`actorRole`、`rowVersion`、`reviewDecision` |
+| `SEAL_CATALOG` | `TYPE_CATALOG` | `requestId` | 无 | `operatorId`、`actorRole`、`entries` |
+| `PUBLISH` | `MAPPING_SNAPSHOT` | `parentSnapshotId` | 无 | `operatorId`、`actorRole`、`parentSnapshotId`、`typeCatalogVersionId`、`changes` |
+| `PUBLISH_CONFLICT` | `CONFLICT_DECISION` | `conflictDecisionId` | 无 | `operatorId`、`actorRole`、`parentSnapshotId`、`typeCatalogVersionId`、`conflictDecisionId` |
+| `RETIRE` | `MAPPING_VERSION` | `mappingVersionId` 的十进制文本 | 无 | `operatorId`、`actorRole`、`parentSnapshotId`、`mappingVersionId`、`effectiveTo` |
+| `ROLLBACK` | `MAPPING_SNAPSHOT` | `targetSnapshotId` | 无 | `operatorId`、`actorRole`、`parentSnapshotId`、`targetSnapshotId` |
+
+校验接口和全部 GET 不计算 `requestHash`。编辑草稿仍不能修改字段路径、目标类型和契约版本，所以这些字段不在 `EDIT_DRAFT` 的请求体里。
 
 ### 创建契约
 
@@ -877,9 +925,15 @@ CREATE TABLE amount_mapping_idempotency_request (
 | 列表 | `05` | 4 字节元素个数，再连接每个元素自己的编码 | 个数是元素数，不是字节数 |
 | 嵌套哈希 | `06` | 32 字节 SHA-256 | 下层对象先按自己的版本名编码并哈希，上层只放这 32 字节 |
 
+字符串长度和列表元素个数都是 4 字节无符号整数，大端序。格式能表示的范围是 0 到 4294967295。本设计拒绝 UTF-8 字节长度超过 65535 的字符串，也拒绝元素超过 10000 的列表，直接返回 `REQUEST_INVALID`。空字符串的长度是 0，字节是 `0100000000`。空列表的元素个数是 0，字节是 `0500000000`。NULL 只有 `00`，它既不是空字符串，也不是空列表。
+
+8 字节整数是大端序的二进制补码。能表示的范围是 -9223372036854775808 到 9223372036854775807。请求里的 `rowVersion` 和 `mappingVersionId` 不能为负。时间使用同一个 8 字节整数，单位是 UTC 的 Unix 毫秒。可接受的文本只有 `yyyy-MM-dd'T'HH:mm:ss.SSS'Z'`，毫秒必须是三位，后缀只能是 `Z`。按公历把这个 UTC 时间换成毫秒，不接受其他时区偏移。业务时间的范围是 `1970-01-01T00:00:00.000Z` 到 `9999-12-31T23:59:59.999Z`。没有右端点仍编码为 NULL，不编码成一个很远的时间。
+
+列表元素是对象时，先连接该对象的固定字段，计算 SHA-256，再写入类型 `06` 和 32 字节。列表元素是整数时，直接写类型 `02` 和 8 字节。两种元素都自带类型，不能靠分隔符区分。
+
 对象本身不另设类型。一个对象就是按该版本规定顺序排列的值。版本名是对象的第一个字符串。字段名不重复写入，缺少的可空字段必须写成 NULL，不能省略，否则后面的字段会错位。
 
-集合在编码前排序。证据按 `evidenceId` 数值升序。候选按 `mappingVersionId` 升序。目录条目按 `typeCode` 的 UTF-8 字节升序。契约条目按 `contractVersionId` 升序。映射条目按 `mappingVersionId` 升序。冲突条目按 `conflictDecisionId` 升序。排序后再写列表长度，所以同一组元素的传入顺序不影响哈希。
+正文里的集合在编码前排序。证据按 `evidenceId` 数值升序。候选按 `mappingVersionId` 升序。目录条目按 `typeCode` 的 UTF-8 字节升序。契约条目按 `contractVersionId` 升序。映射条目按 `mappingVersionId` 升序。冲突条目按 `conflictDecisionId` 升序。请求里的证据和 `changes` 使用第 13 节的排序键。排序键覆盖元素的全部业务字段。键全部相同的元素，编码字节也相同，因此不再用数据库返回顺序、JSON 属性顺序或 Map 迭代顺序打破平局。排序后才写列表长度。
 
 下面五个值的十六进制都是完整编码：
 
@@ -906,6 +960,48 @@ CREATE TABLE amount_mapping_idempotency_request (
 快照 `snapshot-v2` 的值顺序：版本名、`typeCatalogVersionId`、目录哈希、契约条目列表、映射条目列表、冲突条目列表。契约条目是 `contractVersionId`、`bodySha256`。映射条目是 `mappingVersionId`、`contractVersionId`、`fieldPath`、`lifecycleInSnapshot`、`mappingEffectiveFrom`、`mappingEffectiveTo`、`bodySha256`。冲突条目是 `conflictDecisionId`、`contractVersionId`、`fieldPath`、`conflictEffectiveFrom`、`conflictEffectiveTo`、`bodySha256`。候选契约版本补进契约条目后，才会影响这个哈希。
 
 请求 `request-v2` 使用同一套类型编码。它只用于幂等请求的 `requestHash`，不替代上面五种正文哈希。
+
+### request-v2 测试向量
+
+下面三组字节都按本节和上一节的规则算出。SHA-256 是这组字节的小写十六进制。实现要用同样的输入得到同样的字节和哈希。本文件记录的是这三组计算值，还没有把它放进数据库。
+
+第一组是创建契约。聚合 ID 是 `req-1`，`sourceMessageType` 是空字符串。字段按固定顺序编码，JSON 把 `platform` 写在最后也不改变字节。
+
+```text
+010000000a726571756573742d7632010000000f4352454154455f434f4e5452414354010000000f534f555243455f434f4e545241435401000000057265712d3101000000046f702d310100000006454449544f5201000000074d45495455414e01000000026d740100000003646f63010000000001000000114f4646494349414c5f444f43554d454e54
+```
+
+SHA-256：`36cff941ba280ad6a2b9d2d88ee60525e177af01e5842e804f004fefe816463d`。
+
+只把 `platform` 从 `MEITUAN` 改成 `JD`，其余不变，SHA-256 变为 `96e0784821b086361aa92b49dbb92005c5ba0a76e8f76920ba4e38d7e8a24c4a`。
+
+第二组是发布快照。父快照和聚合 ID 都是 `ROOT`，目录是 `catalog-1`。两个变更都是 `ADD_MAPPING`，起点都是 `2026-01-02T03:04:05.006Z`，右端点都是 NULL。输入若先给版本 2 再给版本 1，规范编码仍先写版本 1。版本 1 的对象字节是 `010000000b4144445f4d415050494e47020000000000000001030000019b7ca98c8e00`，嵌套项是 `06622131b6c4ebe50dc562771f2d10b49a9aa9df7d20bccf2281934592630da6c2`。
+
+```text
+010000000a726571756573742d763201000000075055424c49534801000000104d415050494e475f534e415053484f540100000004524f4f5401000000046f702d3101000000095055424c49534845520100000004524f4f540100000009636174616c6f672d31050000000206622131b6c4ebe50dc562771f2d10b49a9aa9df7d20bccf2281934592630da6c206d8a44bbf9869301ab28298fbb987e22b2784277a8faecf5f23559e3a518d6a94
+```
+
+SHA-256：`ee7a6057b3c9df84a1c38b6993ce0b8ca92eb4544b44271172241495b24a1d71`。
+
+不排序、按版本 2 在前编码时，SHA-256 会变成 `21436b752689506bdb9fdae90f1c19b7008c0275e39b188e2eee239a1b86ba91`。那不是规范结果。把版本 2 的右端点改成同一个起点时间后，规范 SHA-256 变为 `a85730f7f7a7821e8b626d15e0758270bfb3ba58937ee1be2aa70eb24e24e500`。
+
+第三组是创建契约版本。路径和聚合 ID 都是 `c-1`，外部版本是“未提供”，两个时间都是 NULL。证据输入顺序是 `ref-b` 然后 `ref-a`，规范顺序按来源字节排成 `ref-a` 然后 `ref-b`。
+
+```text
+010000000a726571756573742d763201000000174352454154455f434f4e54524143545f56455253494f4e010000000f534f555243455f434f4e54524143540100000003632d310100000003632d3101000000046f702d310100000006454449544f520100000009e69caae68f90e4be9b010000000445312d41010000000ce983a8e58886e7a1aee8aea401000000075352432d3030310000050000000206c6fde31695236b2b97640027d8c8b080948f2aec06edda90bea0f1e34bfbc8e406bc413a8c009f9ec52c5ef09ce08126191b157676766f9b95c9f1ed53b5e55b97
+```
+
+SHA-256：`c34a9479a0c2c56156fe77779568434750ac99aeaa4bbf4ba9e7074c9ebd9919`。
+
+不排序时 SHA-256 是 `a510b723a97a388376bf1b3d5a9e6d573bfc40c17c35aedbb2621a5ee2d5a7e7`，这不是规范结果。只把 `ref-a` 的摘录从 `note-a` 改成 `note-c`，规范 SHA-256 变为 `d17b58861a21306159362695347766aaeb81c64f51e347e94f7147a06cf85e2e`。路径和聚合 ID 一起改成 `c-2` 时，SHA-256 变为 `86418731a850eb63918c4d66e41b9711d2eef93c57c61872161b3f3603b8233a`。
+
+三个单独值用于区分空值：
+
+| 值 | 字节 | SHA-256 |
+| --- | --- | --- |
+| NULL | `00` | `6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d` |
+| 空字符串 | `0100000000` | `957b88b12730e646e0f33d3618b77dfa579e8231e3c59c7104be7165611c8027` |
+| 空列表 | `0500000000` | `49e8e3297545c15ab6a79471a7a34d43e24a8f1cb25ea3d8417c61f699267a3f` |
 
 `v1` 是上一轮的分隔符编码，版本名以 `-v1` 结尾。该编码没有写入过数据库，也没有已发布快照。本轮起只接受 `-v2`。读到 `-v1` 或分隔符编码时校验失败，不自动转换成 `v2`，也不按 `v1` 继续执行。
 
@@ -960,7 +1056,13 @@ Pipeline 的顺序不变：原文、原始金额、来源、按固定快照匹�
 | 目录数量 | 条目数和 `itemCount` 不一致 | 封存失败；已封存的目录被改少时 Worker 拒绝 |
 | 重试 | 新快照已发布 | 重试仍用原 `snapshotId` 和原目录版本 |
 | 快照损坏 | 删除一条候选、证据或目录条目 | `SNAPSHOT_INTEGRITY_FAILED`，不改读最新配置，也不自动修复 |
-| 哈希输入稳定 | 同一内容按不同传入顺序计算，字符串中含竖线或 `1F` | 排序后哈希相同。NULL、空字符串和含分隔符的字符串三种编码都不同 |
+| JSON 字段顺序 | 第一组创建契约，只改变 JSON 字段先后 | 字节和 SHA-256 仍是 `36cff941ba280ad6a2b9d2d88ee60525e177af01e5842e804f004fefe816463d` |
+| 集合输入顺序 | 第二组、第三组按相反顺序提交集合 | 规范哈希仍分别是 `ee7a6057b3c9df84a1c38b6993ce0b8ca92eb4544b44271172241495b24a1d71` 和 `c34a9479a0c2c56156fe77779568434750ac99aeaa4bbf4ba9e7074c9ebd9919` |
+| 空值区分 | NULL、空字符串、空列表 | 三个 SHA-256 分别是 `6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d`、`957b88b12730e646e0f33d3618b77dfa579e8231e3c59c7104be7165611c8027`、`49e8e3297545c15ab6a79471a7a34d43e24a8f1cb25ea3d8417c61f699267a3f` |
+| 相同请求重放 | 同一请求号，请求字节与第一组相同 | 返回第一次的完整响应，不写第二份业务数据 |
+| 请求内容不同 | 同一请求号，但 `platform` 改为 `JD` | `REQUEST_REUSED`。该内容自己的哈希是 `96e0784821b086361aa92b49dbb92005c5ba0a76e8f76920ba4e38d7e8a24c4a` |
+| 路径变化 | 第三组的 `contractId` 改为 `c-2` | 哈希变为 `86418731a850eb63918c4d66e41b9711d2eef93c57c61872161b3f3603b8233a` |
+| 嵌套内容变化 | 第三组把 `note-a` 改为 `note-c` | 哈希变为 `d17b58861a21306159362695347766aaeb81c64f51e347e94f7147a06cf85e2e` |
 | 候选契约进入快照 | 两个候选引用父快照中没有的同一契约版本 | 新快照只有一条该契约条目，`itemCount` 和 `contentSha256` 都包含它 |
 | 候选契约缺失 | 候选的 `contractVersionId` 读不到正文 | 整笔回滚，不留下 `SUCCEEDED` 请求 |
 | 发布幂等 | 同一请求号、同一请求内容再次提交 | 返回第一次的完整响应和原来的 `snapshotId`，不产生第二个批次 |
@@ -990,7 +1092,7 @@ Worker 只接受完整通过校验的 `MappingSnapshot`。候选依赖的契约�
 
 没有发现用配置状态绕过语义确认的路径。类型不是 `ACTIVE`、资格未确认或被禁止、冲突尚未形成已审核决定，都不能进入正式业务映射。
 
-这是第五轮修订稿，用来提交审查。它还不是冻结设计，也没有批准任何生产金额映射。
+这是第六轮修订稿，用来提交审查。它还不是冻结设计，也没有批准任何生产金额映射。
 
 ## 19. 修订记录
 
@@ -1001,3 +1103,4 @@ Worker 只接受完整通过校验的 `MappingSnapshot`。候选依赖的契约�
 | 第三轮 | 同一快照保留多段不重叠映射窗口。冲突决定单独存全文。契约材料用内部修订号和正文指纹区分。发布批次固定类型目录版本 |
 | 第四轮 | 发布冲突决定时封存候选版本并保存正文哈希。定义快照读取对象和规范哈希。补充管理接口的请求、响应、幂等和事务 |
 | 第五轮 | 候选依赖的契约版本写入新快照。用独立请求表重放第一次的完整响应。哈希改为带类型和长度的编码 |
+| 第六轮 | 固定每种变更请求的 `request-v2` 字段顺序、排序平局和二进制范围，并记录三组哈希测试向量 |
