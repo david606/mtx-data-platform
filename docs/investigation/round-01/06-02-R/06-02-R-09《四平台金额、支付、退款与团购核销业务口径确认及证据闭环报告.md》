@@ -4,15 +4,17 @@
 
 调查对象是 trade-flow。MTX Data Platform V2 没有这些能力。下文“建议”不是 V2 已实现功能。
 
-证据：E1 官方页面或仓库接口摘录；E2 真实报文或对账；E3 生产库结构；E4 当前源码；E5 设计文档和代码注释；E6 建议。本轮没有 E2，没有生产金额行。测试没有执行，不能写成通过。
+证据等级从本轮起分开。E1-A 是这次打开的平台官方页，不证明生产报文和文档一致。E1-B 是仓库里保存的接口摘录，不证明摘录版本仍然有效。E2 是真实报文，本轮没有。E3 是生产结构或抽样，本轮没有金额行抽样。E4 是当前源码，不证明生产已经走到该路径。E5 是设计文档和代码注释。E6 是建议，不是事实。本轮未执行测试。
 
-三个指标不能合并：
+这些概念不能合并，名称只是调查标识，不是 V2 已有字段：
 
-| 指标 | 含义 | 状态 |
+| 标识 | 含义 | 状态 |
 | --- | --- | --- |
-| turnover_v1_trade_flow | `OrderTurnoverCalculator` 现在算出来的数 | 代码行为已确认，E4 |
-| turnover_business | 经营成交额 | 待业务确认 |
-| settlement_receivable | 商家应收或结算额 | 待财务确认，且美团还有官方字段 |
+| user_pay_amount | 订单侧记录的支付相关金额。来源字段必须单独写明 | 京东来源仍是“用户应付”，是否等于最终支付成功额待确认 |
+| merchant_receivable_amount | 平台或业务定义的商家应收 | 美团官方字段是 `wmPoiReceiveCent`。不是结算额 |
+| settlement_amount | 按结算规则确认的金额 | 待财务确认。不能用商家应收代替 |
+| turnover_v1_trade_flow | `OrderTurnoverCalculator` 的当前计算结果 | 代码行为，E4。不是经营成交额 |
+| turnover_business | 业务确认后的经营成交额 | 待业务确认 |
 
 ## A. 整改概况
 
@@ -44,25 +46,27 @@
 
 | 官方或摘录字段 | 证据 | 代码行 | 统一字段 | Doris |
 | --- | --- | --- | --- | --- |
-| `orderTotalMoney` 销售价总额 | 仓库摘录 `docs/references/jd/jd.o2o.order.es.query.md` 201 行，E1 | 133 | `orderDiscountBaseAmount` | `order_discount_base_amount` |
-| `orderBuyerPayableMoney` 用户应付，单位分 | 同摘录 210 行，E1。未写是否含餐盒和运费 | 137 | `userPayAmount` | `user_pay_amount` |
-| `orderDiscountMoney` 订单级优惠，不含单品和运费优惠 | 同摘录 202 行，E1。未写包装优惠 | 141 | `totalDiscountAmount` | `total_discount_amount` |
-| `orderFreightMoney` 用户实付运费 | 同摘录 203 行，E1 | 145 | `userDeliveryFeeAmount` | `user_delivery_fee_amount` |
-| `canteenMoney` 商品总餐盒费 | 同摘录 284 行，E1 | 183–191 求和 | `packingFeeAmount` | `packing_fee_amount` |
-| `packagingMoney` 包装金额 | 同摘录 211 行，E1 | 不使用 | 无 | 无 |
+| `orderTotalMoney` 销售价总额 | 仓库摘录 `docs/references/jd/jd.o2o.order.es.query.md` 201 行，E1-B | 133 | `orderDiscountBaseAmount` | `order_discount_base_amount` |
+| `orderBuyerPayableMoney` | 摘录 210 行原文是“用户应付金额，单位分”，E1-B。未写是否含餐盒和运费，也没有把它定义成最终支付成功额 | `map` 137 行 | 代码字段 `userPayAmount`。这个名字不是官方定义 | `user_pay_amount` |
+| `orderDiscountMoney` 订单级优惠，不含单品和运费优惠 | 同摘录 202 行，E1-B。未写包装优惠 | 141 | `totalDiscountAmount` | `total_discount_amount` |
+| `orderFreightMoney` | 摘录 203 行是“用户实际支付运费”，E1-B。这是运费，不是整单用户应付 | 145 | `userDeliveryFeeAmount` | `user_delivery_fee_amount` |
+| `canteenMoney` 商品总餐盒费 | 同摘录 284 行，E1-B | 183–191 求和 | `packingFeeAmount` | `packing_fee_amount` |
+| `packagingMoney` 包装金额 | 同摘录 211 行，E1-B | 不使用 | 无 | 无 |
 
 进入事实前，事件必须是 `ORDER_DETAIL`。`JdTradeEventHandler` 141 行，文件 `trade-analytics/src/main/java/com/mtx/trade/analytics/preparation/source/jd/JdTradeEventHandler.java`。创建消息 `orderCreated` 没有金额，见 SRC-03。查询摘录和这则消息都涉及秒送字样，但是否同一契约仍待平台确认，SRC-002。
 
 美团见第 C 节。淘宝见 B.5。富智云订单推送摘录在 `trade-flow/docs/references/fuiou/api.md`：`orderDisAmt` 22 行是不含快递和若干优惠的原单金额，单位分；`payAmt` 23 行给出实付组成；`expressAmt` 44 行；`fullOrderDisAmt` 69 行；`packagePriceDisAmt` 91 行只有名称，没有正负；`lunchBoxFee` 105 行，单位分。映射在 `FuiouOrderFactMapper.map` 133–141 行，文件 `trade-analytics/src/main/java/com/mtx/trade/analytics/preparation/source/fuiou/FuiouOrderFactMapper.java`。`orderOriginalAmount` 固定空。套餐行在 `FuiouOrderDiscountFactMapper.benefitAmount` 187 行。
 
-### B.3 用户实付和商家应收
+### B.3 订单侧支付金额、商家应收和结算额
 
-| 平台 | 代码里的用户实付 | 代码里的商家收入 | 能否当成同一个数 |
+`userPayAmount` 只是代码字段名。它不等于已经确认的最终用户实付，也不等于支付成功流水合计。商家应收、结算额和 `turnover_v1_trade_flow` 也不是同一个数。PAY-001。
+
+| 平台 | 订单侧支付相关字段 | 商家应收或收入列 | 能否当成结算额 |
 | --- | --- | --- | --- |
-| 京东 | 详情 `orderBuyerPayableMoney` | 另一条收入补齐，冲突则拒绝 | 不能 |
-| 美团 | 回调 `total` | 只有详情里的 `wmPoiReceiveCent` | 不能。官方也没有把总价定义成应收 |
-| 淘宝 | 快照 `totalPrice` | 仅详情查询的 `income`，132 行 | 不能。`totalPrice` 尚无官方定义 |
-| 富智云 | 订单 `payAmt` | 实付减退款和赠送，且可被退款补丁改写 | 不能 |
+| 京东 | 摘录称 `orderBuyerPayableMoney` 为用户应付，E1-B。`JdOrderFactMapper.map` 137 行把它写入 `userPayAmount`。`JdOrderReceiptMapper.map` 32 行用同一字段生成原收款。是否等于最终支付成功额，待平台和业务确认 | `reduceJdIncome` 654–656 行：已有收入和新金额不同则拒绝覆盖 | 不能。原收款也不是结算额 |
+| 美团 | 回调 `map` 128–129 行把 `total` 写入 `userPayAmount`。官方只称 `total` 为总价，E1-A | 只在详情路径写入 `merchantEstimatedIncomeAmount`，见 C.3。官方字段是商家应收，不是结算额 | 不能 |
+| 淘宝 | 快照把 `totalPrice` 写入 `userPayAmount`。该字段无 E1-A | 详情查询的 `income` 写入收入列，`TaobaoOrderFactMapper.map` 132 行 | 不能。`income` 的官方定义本轮没有 |
+| 富智云 | 订单摘录把 `payAmt` 写成实付金额并给出组成，E1-B。代码写入 `userPayAmount` | `fuiouMerchantIncome` 627–638 行从该金额减退款和赠送 | 不能把这条收入当成结算额 |
 
 ### B.4 支付
 
@@ -71,15 +75,15 @@
 | 富智云 | `FuiouPaymentFactMapper`，`.../source/fuiou/FuiouPaymentFactMapper.java` | `map` 28–53 | `payState` 1 成功、2 已退款、其他未知，三种都写事实。一行一个 `paySsn`，行键 `PRIMARY`。金额 `payAmt` | `feeAmt`。支付摘录 252 行只写 Long，未写分 |
 | 美团 | `MeituanPaymentFactMapper`，`.../source/meituan/MeituanPaymentFactMapper.java` | `map` 24–46 | 只有 `payType=2` 的 `managedCancelAndConfirmOrder` 且金额、创建时间合法，才写 `ORDER_PAY:<订单号>`。金额是 `total` 元转分 | 未映射 |
 | 淘宝 | `TaobaoPaymentFactMapper`，`.../source/taobao/TaobaoPaymentFactMapper.java` | `map` 15–28 | 仅 `onlinePaid=true` 且金额、创建时间合法。金额是 `totalPrice` | 未映射 |
-| 京东 | `JdOrderReceiptMapper`，`.../source/jd/JdOrderReceiptMapper.java` | `map` 26–35 | 没有 `JdPaymentFactMapper`。原收款 `ORDER_PAY:<订单号>` + `PRIMARY`，金额 `orderBuyerPayableMoney.longValue()` | 未赋值 |
+| 京东 | `JdOrderReceiptMapper`，`.../source/jd/JdOrderReceiptMapper.java` | `map` 26–35 | 没有 `JdPaymentFactMapper`。原收款 `ORDER_PAY:<订单号>` + `PRIMARY`。金额取用户应付字段 `orderBuyerPayableMoney.longValue()`。这是原收款事实，不是已经核对过的支付成功流水合计 | 未赋值 |
 
-没有代码要求订单实付等于支付成功合计。富智云 `payAmtExtra` 不拆成第二行。充值 `FuiouRechargeFactMapper` 不进入订单营业额。问题编号 PAY-001、PAY-002、PAY-003。
+没有代码要求订单侧 `userPayAmount` 等于支付成功流水合计。京东两边都读用户应付字段，仍然不能据此认定它们相等。富智云 `payAmtExtra` 不拆成第二行。充值 `FuiouRechargeFactMapper` 不进入订单营业额。问题编号 PAY-001、PAY-002、PAY-003。
 
 ### B.5 淘宝消息和金额
 
-`TaobaoEventType`，文件 `trade-common/src/main/java/com/mtx/trade/common/thirdparty/taobao/TaobaoEventType.java`，88 行：217 是“订单生效，店铺可以看到新订单”。这与 SRC-01 目录一致，E1 只到消息名。
+`TaobaoEventType`，文件 `trade-common/src/main/java/com/mtx/trade/common/thirdparty/taobao/TaobaoEventType.java`，88 行：217 是“订单生效，店铺可以看到新订单”。这与 SRC-01 目录一致。证据只到消息名，等级 E1-A。
 
-`TaobaoOrderFactMapper.map`，文件 `trade-analytics/src/main/java/com/mtx/trade/analytics/preparation/source/taobao/TaobaoOrderFactMapper.java`。51 行：详情查询或 217 才是快照。120–129 行写入 `originalPrice`、`totalAmount`、`totalPrice`、`deliverFee`，并把 `totalPrice` 同时放入优惠后金额和用户实付。SRC-01 没有这些字段的类型和单位。AMT-004、SRC-001 仍待平台确认。
+`TaobaoOrderFactMapper.map`，文件 `trade-analytics/src/main/java/com/mtx/trade/analytics/preparation/source/taobao/TaobaoOrderFactMapper.java`。51 行：详情查询或 217 才是快照。120–129 行写入 `originalPrice`、`totalAmount`、`totalPrice`、`deliverFee`，并把 `totalPrice` 同时写入优惠后金额和代码字段 `userPayAmount`。这不是官方用户实付定义。SRC-01 没有这些字段的类型和单位。AMT-004、SRC-001 仍待平台确认。
 
 本轮在 `trade-ingress` 的 Java 源码里没有把 217 的报文字段表找出来。金额定义不能用代码字段名代替。
 
@@ -104,7 +108,7 @@
 
 商品首次插入 234 行把未知退款成功额和数量写成 0。这是占位，不是已经证明没有退款。京东、淘宝累计补丁 4128–4132 行直接赋值，条件是小于等于。富智云商品补丁 4158–4188 行只在金额非空时赋值，条件是小于，相同序号不能更新。
 
-团购：`FuiouGroupBuyVerificationRows.fromResponse` 56–80 行，文件 `trade-analytics/src/main/java/com/mtx/trade/analytics/maintenance/enrichment/verification/FuiouGroupBuyVerificationRows.java`。八个金额原样 `BigDecimal`，scale 大于 6 失败，不换算。`FuiouGroupBuyVerificationSyncService` 190 行 stream load upsert。唯一键含 `check_month`。跨月新键不删除旧行。没有 `meta_sink_sequence`。单位无 E1，GBV-001。平衡公式无 E1 也无 E2，GBV-002，无法验证。
+团购：`FuiouGroupBuyVerificationRows.fromResponse` 56–80 行，文件 `trade-analytics/src/main/java/com/mtx/trade/analytics/maintenance/enrichment/verification/FuiouGroupBuyVerificationRows.java`。八个金额原样 `BigDecimal`，scale 大于 6 失败，不换算。`FuiouGroupBuyVerificationSyncService` 190 行 stream load upsert。唯一键含 `check_month`。跨月新键不删除旧行。没有 `meta_sink_sequence`。单位无 E1-A 或 E1-B，GBV-001。平衡公式无官方定义也无 E2，GBV-002，无法验证。
 
 06-DB-01-06：投诉和结算事实表存在，分区行数为 0。不能把结算样本写成已经核对。E3 只说明表和行数状态，不说明金额公式。
 
@@ -112,17 +116,17 @@ R-08 已看到营业额分支、富智云退款冲突、顺序号边界和团购
 
 ## C. 美团专项
 
-官方页 SRC-02：https://developer.waimai.meituan.com/home/docDetail/175 ，2026-11-23 16:42 读取。接口名是“推送已确认订单”。trade-flow 回调事件名是 `managedCancelAndConfirmOrder`。两者字段名也不相同：官方商品在 `detail`，代码回调使用 `wmAppOrderFoods`。因此 E1 能定义同名字段，不能证明回调报文就是这一页的 form。
+官方页 SRC-02：https://developer.waimai.meituan.com/home/docDetail/175 ，2026-11-23 16:42 读取。接口名是“推送已确认订单”。trade-flow 回调事件名是 `managedCancelAndConfirmOrder`。两者字段名也不相同：官方商品在 `detail`，代码回调使用 `wmAppOrderFoods`。因此 E1-A 能定义这一页上的同名字段，不能证明回调报文就是这一页的 form。
 
 ### C.1 字段对照
 
 | 官方字段 | 类型和含义 | 代码 | 差异 |
 | --- | --- | --- | --- |
 | `original_price` | double，示例 23.1。原价含 1 对 1 急送费 | 详情改名 `originalPrice`。`MeituanOrderFactMapper.map` 125–127 行写入原价和营业额基数，元转分 | 能对上名称。基数含急送费是官方事实，代码注释没写 |
-| `total` | double，示例 22.1。总价含急送费 | 128–129 行同时写优惠后金额和用户实付。支付 Mapper 也用它 | 存在冲突。官方没说它是用户实付。AMT-003 |
+| `total` | double，示例 22.1。总价含急送费 | 128–129 行把总价写入优惠后金额和代码字段 `userPayAmount`。支付 Mapper 也用总价 | 存在冲突。官方称总价。代码字段名 `userPayAmount` 不是官方定义。AMT-003 |
 | `shipping_fee` | float，示例 1.9。门店配送费 | 132 行写入配送费。营业额把它减一次 | 没有第二次相加 |
 | `phf_ssf` | double，元。已计入配送费 | 未读取 | 没有重复计入。也没有单独保存。AMT-008 |
-| `wmPoiReceiveCent` | long，分。商家应收 | 只在 `mapOrderDetail` 206–208 行写入 `merchantEstimatedIncomeAmount`。缺失不用实付填 | 回调主映射不写。不是营业额。AMT-006 |
+| `wmPoiReceiveCent` | long，分。商家应收，不是结算额 | 读取和写入分属两个类，见 C.3。缺失不改用 `total` | 回调 `map` 不写该列。不是营业额，也不是结算额。AMT-006 |
 | `package_bag_mode` | int。0 餐盒，1 订单，2 口袋 | 未读取 | 见 C.2 |
 | `package_bag_fee` | double，元。有值时直接使用 | 未读取 | 与商品行求和冲突。AMT-007 |
 | `package_bag_money` / `_yuan` | 分 / 元字符串。打包袋 | 未读取 | 没有和餐盒费相加，也没有保存 |
@@ -144,11 +148,22 @@ SRC-02 补录的原文：
 
 有 `package_bag_fee` 时官方要求直接使用，禁止商品行覆盖。mode=0 且字段未返回，才允许商品行回退。代码没有读 mode，也没有读订单级打包费，所有能算出的商品行都求和。因此 mode=1 和 2 与官方冲突。mode=0 且字段缺失时，商品行算法和官方回退接近，但仍缺少“不要加 sub_detail_list”的代码约束，本轮没有看到对应判断。
 
-### C.3 商家应收会不会补上
+### C.3 商家应收链路
 
-回调链路：`MeituanTradeEventHandler.handleForBackfill` 254–259 行调用 `orderMapper.map`。这个 `map` 不读 `wmPoiReceiveCent`。回调报文里有没有这个字段，没有 E2，不能断言。即便有，当前 `map` 也不写入收入列。
+下列行号是当前 `trade-flow` 源码，E4，对应 AMT-006 和 AMT-010。回调报文里有没有 `wmPoiReceiveCent`，没有 E2，不能断言。
 
-详情链路：同一类 124–131 行，仅 `ORDER_DETAIL` 且 v2 查询才调用 `MeituanOrderDetailNormalizer.normalize`。117–125 行把官方 `wmPoiReceiveCent` 放进订单。158–159 行 `mapOrderDetail` 写入商家收入。官方该字段必填为否。查询成功但没有字段时，收入仍为空，且不用 `total` 填充。这是代码行为，E4。
+| 仓库相对路径 | 类与方法 | 行号 | 行为 | 上游字段 | 中间字段 | Doris 字段 |
+| --- | --- | --- | --- | --- | --- | --- |
+| `trade-analytics/src/main/java/com/mtx/trade/analytics/preparation/source/meituan/MeituanOrderFactMapper.java` | `com.mtx.trade.analytics.preparation.source.meituan.MeituanOrderFactMapper.map` | 128–132 | 回调主映射写总价、原价和配送费。不读 `wmPoiReceiveCent`，不设置 `merchantEstimatedIncomeAmount` | 回调里的 `total`、`originalPrice`、`shippingFee` | `userPayAmount` 等。收入列不在这里赋值 | 本次不写 `merchant_estimated_income_amount` |
+| `trade-analytics/src/main/java/com/mtx/trade/analytics/preparation/source/meituan/MeituanTradeEventHandler.java` | `MeituanTradeEventHandler.handleForBackfill` | 124–131、156–159 | 只有事件类型 `ORDER_DETAIL` 且为 v2 查询才进入详情。然后调用 `mapOrderDetail` | 查询事件 | 详情对象 | 不直接写 Doris |
+| `trade-analytics/src/main/java/com/mtx/trade/analytics/preparation/source/meituan/MeituanOrderDetailNormalizer.java` | `normalize` | 62–63、123–125 | 合同版本为 2 时改走 `normalizeBestEffort`。否则先删掉回调上的同名字段，详情有值才放回 | 详情 `wmPoiReceiveCent` | 仍叫 `wmPoiReceiveCent` | 不写 Doris |
+| 同上 | `normalizeBestEffort` | 188–196 | 合同版本 2：先删除，详情非空才写回。缺字段就保持没有这个字段 | 同上 | 同上 | 不写 Doris |
+| `MeituanOrderFactMapper.java` | `mapOrderDetail` | 204–208 | 调用 `map` 后再把 `wmPoiReceiveCent` 写入商家收入。注释写明缺失不用顾客支付金额代替 | `wmPoiReceiveCent` | `merchantEstimatedIncomeAmount` | 随后由 Writer 写入 |
+| `trade-analytics/src/main/java/com/mtx/trade/analytics/persistence/DorisCanonicalFactWriter.java` | 常量 `ORDER_SNAPSHOT_SQL_TEMPLATE` | 155、189 | 插入语句列出 `merchant_estimated_income_amount`，绑定参数 `:merchantEstimatedIncomeAmount` | 参数 | 同名参数 | 订单事实插入列 |
+| 同上 | `orderParameters` | 6991 | 京东在这条参数组装里把收入参数写成空。美团及其他平台传入订单对象上的 `merchantEstimatedIncomeAmount` | 订单对象 | 同名参数 | 随后进入插入或更新 |
+| 同上 | `orderCoreUpdateSql` | 5361–5362 | `merchant_estimated_income_amount = COALESCE(新值, 旧值)`。新值为空保留旧值，新值非空才覆盖 | `merchantEstimatedIncomeAmount` | 同名参数 | `dwd_trade_order_fact.merchant_estimated_income_amount` |
+
+官方该字段必填为否，E1-A。查询成功但没有字段时，收入参数为空，`COALESCE` 不会用 `total` 填充。4987–4990 行是京东专用的“原值为空才写入”，不是美团详情更新。这是代码行为，不是已经证实的生产数据损失。
 
 补拉不是每单都做。`MeituanOrderPickupTaskService.ensureFor` 101–104 行，文件 `trade-analytics/src/main/java/com/mtx/trade/analytics/maintenance/enrichment/pickup/MeituanOrderPickupTaskService.java`。条件是 v2 确认回调、已有销售行，并且不是“优惠已就绪且明细已就绪”。`map` 157–158 行：明细就绪等于商品价格完整，优惠就绪等于 `activity` 数组存在。两边都真时，方法直接返回，不建任务。
 
@@ -156,11 +171,15 @@ SRC-02 补录的原文：
 
 因此：代码层存在遗漏路径，完整回调可以入库且商家应收一直为空。数据流只对不完整回调有补偿。生产是否已经出现空收入，本轮没有查询，不能写成数据损失已经发生。
 
-写入：收入列在订单更新里走 `COALESCE`，5367 行。后到的非空值可以填上空白；空值不会擦掉已有收入。
+写入：美团走 `orderCoreUpdateSql` 5361–5362 行的 `COALESCE`。后到的非空值可以填上空白；空值不会擦掉已有收入。插入列在常量 155、189 行，不能把插入行号写成更新行号。
 
 ### C.4 extras 和预付
 
-`MeituanOrderDetailNormalizer` 132–145 行对每个 `extras` 元素调用 `requireAmount(extra, "reduce_fee")`。缺少金额会抛异常，不是忽略，也不是写成 0。官方允许同数组出现只有 `rider_fee` 的元素。若生产报文带这种元素，详情整单会失败。这是代码路径风险。没有报文，不能说生产已经失败。
+合同版本不是 2 时，`normalize` 132–145 行对每个 `extras` 元素调用 `requireAmount(extra, "reduce_fee")`。缺少金额会抛异常，不是写成 0。
+
+合同版本为 2 时走 `normalizeBestEffort` 201–214 行。某个元素没有合法 `reduce_fee` 时，`valid` 变为假，整组 `activity` 不写入。这个路径不因为单个骑手元素抛异常，但优惠集合也不会被采用。
+
+官方允许同数组出现只有 `rider_fee` 的元素，E1-A。两条代码路径都没有按“有 `rider_fee` 就当骑手费用”分开。这是代码路径风险。没有报文，不能说生产已经失败。
 
 优惠事实 `MeituanOrderDiscountFactMapper.map` 35–38 行只累加正的 `reduceFee`，并读 `poiCharge`、`mtCharge`。`consumer_prepays` 没有读取。预付是否已经包含在 `total` 或优惠额里，官方只说与优惠明细按顺序对应，没有给出加减公式。不能断定重复计入。
 
@@ -170,11 +189,12 @@ SRC-02 补录的原文：
 
 | 类别 | 本轮状态 |
 | --- | --- |
-| 官方文档 | 美团已确认订单页 E1；淘宝只有目录 E1；京东创建消息无金额 E1；富智云和京东查询字段来自仓库摘录 E1 |
-| 源码 | 上表路径和行号本轮按当前文件复核，E4 |
-| 真实报文 | 无，E2 缺失 |
-| 生产数据 | 无金额行。结算表行数为 0 来自 06-DB-01-06，E3 |
-| 业务和财务 | 无书面确认 |
+| E1-A 平台官方页 | 美团已确认订单页；淘宝只有消息目录；京东创建消息页没有金额。都不能外推成生产报文 |
+| E1-B 仓库摘录 | 京东订单查询字段、富智云订单和支付字段。不证明摘录仍是现行接口 |
+| E4 源码 | 上表路径和行号按当前文件复核。不证明生产已经执行 |
+| E2 真实报文 | 无 |
+| E3 生产数据 | 金额行未抽样。结算表行数为 0 来自 06-DB-01-06，只说明当时没有结算行 |
+| 业务和财务 | 无书面确认。E5 注释不能代替 |
 
 ## E. 仍未解决的问题
 
@@ -182,7 +202,7 @@ SRC-02 补录的原文：
 
 业务：AMT-001、AMT-005、PAY-001、PAY-002、REF-002、REF-004、GBV-003，以及退款后要不要另算净额。
 
-财务：`settlement_receivable`、PAY-003 的手续费单位、GBV-002。没有对账规则前不能建平衡公式。
+财务：`settlement_amount` 仍无公式。PAY-003 的手续费单位、GBV-002 也没有。商家应收不能填进结算额。
 
 生产只读：商家应收空值是否大量存在。没有抽样前不叫数据损失。
 
@@ -194,12 +214,14 @@ SRC-02 补录的原文：
 
 依据：四套代码公式、支付生成条件、退款累计、空值差异、团购不换算、美团总价与应收的官方区别，都已经能写进设计输入。经营口径、结算口径、淘宝金额定义、京东售后精度、团购单位仍没有确认。
 
-约束：06-03 必须分列原价、总价、用户实付、商家应收、配送费、订单打包费、打包袋和退款。`turnover_v1_trade_flow` 单独版本化。禁止把 `total` 写成用户实付，禁止把营业额写成商家应收，禁止转换团购单位。若下一阶段要冻结经营或结算公式，改为 C。
+约束：06-03 必须分列原价、总价、订单侧支付金额、商家应收、结算额、配送费、订单打包费、打包袋和退款。`turnover_v1_trade_flow` 单独版本化，不叫经营成交额。禁止把美团 `total` 或京东用户应付写成已确认的最终用户实付。禁止把 `wmPoiReceiveCent` 写成结算额，也禁止把它写成营业额。禁止转换团购单位。若下一阶段要冻结经营或结算公式，改为 C。
 
 ## G. V2 建议
 
-只建议，不改 V2 代码。原始金额和标准金额分开。每笔金额带单位、精度、平台、原始字段、映射版本和规则版本。保留原始报文，便于以后按官方模式重放打包费。对账发现 `total` 与应收不等、退款大于实付、同券跨月两行时只告警。业务指标定义不要塞进字段映射。
+只建议，不改 V2 代码。原始金额和标准金额分开。每笔金额带单位、精度、平台、原始字段、映射版本和规则版本。保留原始报文，便于以后按官方模式重放打包费。对账发现总价与商家应收不等、退款大于订单侧支付金额、同券跨月两行时只告警。业务指标定义不要塞进字段映射。以上是 E6。
 
 ## H. 变更说明
 
 本文件由第二轮重写，用于恢复第一版被压缩的支付、退款、空值、序号、团购和测试结论，并加入美团模式与补拉。SRC-02 增加模式枚举。矩阵增加补拉问题和责任方、验收列。SRC-01、SRC-03 未改。没有删除证据文件。
+
+收尾修订只改概念边界、证据等级和美团应收定位。SRC 文件未改。本轮未执行测试。
