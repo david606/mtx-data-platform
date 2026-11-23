@@ -107,7 +107,18 @@
 | TO_MERCHANT | 流向商家。是否已经结算，不由本值表示 |
 | FROM_PLATFORM | 平台付出 |
 
-示例：订单原价是 `NOT_APPLICABLE`。用户应付是 `UNKNOWN`，因为“应付”还不是已经支付。退款成功金额在状态定义确认前也是 `UNKNOWN`，不能直接写成 `COUNTERPARTY_TO_USER`。
+示例：订单原价是 `NOT_APPLICABLE`。用户应付是 `UNKNOWN`，因为“应付”还不是已经发生的付款。
+
+资金方向不是经营指标的增减，也不表示合计规则已经确认。
+
+本轮核对了把成功类改成明确方向的建议。`AMT.PAY.SUCCESS` 若改成 `USER_TO_COUNTERPARTY`，`AMT.RFD.SUCCEEDED` 若改成 `COUNTERPARTY_TO_USER`，只是在重复类型名称，调查证据不够：
+
+- 支付成功状态在四个平台没有共同定义。PAY-001 只确认旧代码没有做订单金额和流水合计的等式。
+- 京东旧代码的原收款来自用户应付字段，不能证明用户已经把钱付给了某个对手方。
+- 富智云 `payAmt` 的组成没有被证明全部来自用户。
+- 退款成功合计是否就是退回用户的金额，仍是 REF-003 和用户实退的未决问题。
+
+因此这两个编码的资金方向保持 `UNKNOWN`。其余被点名的编码也不改：应付和实付还不是已确认的付款流动；退款单不表示成功；用户实退没有定义；商家应收不是结算流动；结算金额没有规则。
 
 ### 4.3 bearerType
 
@@ -173,7 +184,8 @@ EvidenceStatus 仍写在观测上，不写进 semanticStatus。E4 不能把语�
 | --- | --- | --- |
 | ALLOWED_IF_CONTRACT_DEFINES | 只有来源契约的文字落在本类型定义内才可映射 | 美团原价、美团总价、美团商家应收 |
 | NOT_UNTIL_CONFIRMED | 类型先占位，确认前禁止映射 | 用户实付、销售价总额在 SRC-002 关闭前、淘宝金额 |
-| DISALLOWED | 禁止作为映射目标 | 经营成交额、净成交额、结算额、退款成功合计 |
+| DISALLOWED | 禁止作为映射目标 | 经营成交额、净成交额、结算额、支付成功合计、退款成功合计 |
+| ALLOWED_AS_UNIDENTIFIED | 只允许把语义尚未确认的字段保存为未识别观测 | 仅 `AMT.UNK.UNIDENTIFIED` |
 | CONFLICT_ONLY | 只能作为冲突候选，不能成为已确认观测 | 目前不把任何类型设成这个值。冲突记在映射上 |
 
 06-03-01 的 MappingStatus 仍表示映射定义是草稿、生效或停用，以及某次执行是已映射、未映射或冲突。mappingEligibility 不取代它。一个类型是 `ALLOWED_IF_CONTRACT_DEFINES`，具体映射仍可以是 `DRAFT`。
@@ -209,6 +221,23 @@ EvidenceStatus 仍写在观测上，不写进 semanticStatus。E4 不能把语�
 
 团购八列的 unitEvidence 固定按 `UNCONFIRMED` 设计。禁止写成 `FEN` 或 `YUAN`。
 
+### 6.1 聚合策略
+
+聚合策略不决定能不能保存单笔观测。单笔是否允许，看 mappingEligibility。聚合策略只决定多笔能不能合成一个数。
+
+| 值 | 含义 |
+| --- | --- |
+| FORBIDDEN | 禁止把多笔收成这个类型的合计，包括跨平台相加。单笔观测在映射资格允许时仍然可以存在 |
+| SAME_TYPE_AFTER_CONFIRMATION | 只有同编码、同币种、同已确认单位，且语义状态允许之后才能加总。当前没有类型使用这个值 |
+| RULE_CONTROLLED | 只有一条尚未生效的 AmountCalculationRule 可以定义怎么加。规则不存在时不得加总，也不得把结果当成已经确认的口径 |
+| NOT_APPLICABLE | 这个类型本身不讨论聚合 |
+
+`AMT.PAY.SUCCESS` 和 `AMT.RFD.SUCCEEDED` 是合计槽位，所以不再标成永远 `FORBIDDEN`。它们改为 `RULE_CONTROLLED`。当前没有生效规则，因此现在仍然不能加总，也不能把多平台流水并成一个数。这不新增公式。
+
+`AMT.ORD.DISCOUNT_DETAIL` 也是 `RULE_CONTROLLED`。将来若要加总明细，必须有单独规则，并且不能把加总结果写进 `AMT.ORD.DISCOUNT_ORDER`。订单级优惠仍是 `FORBIDDEN`：它是订单头上的一笔金额，不是明细合计，富智云旧代码还禁止把明细再加进订单头优惠。
+
+全部 `AMT.GBV.*` 保持 `FORBIDDEN`。单位未确认，GBV-002 没有平衡公式，不能把八列或跨券金额加在一起。这不禁止将来按单列保存一笔核销金额。
+
 ## 7. 标准金额类型目录
 
 性质、资金方向、承担主体、指标影响分别用第 4 节的枚举。正负号全部是 `PRESERVE_SOURCE`，目录中不再重复。币种要求和单位要求，除未识别类型外都是 `REQUIRED_BEFORE_AGGREGATION`。未识别类型这两项是 `NOT_APPLICABLE`。精度约束除特别注明外都是 `NO_IMPLICIT_ROUNDING`。
@@ -221,12 +250,12 @@ EvidenceStatus 仍写在观测上，不写进 semanticStatus。E4 不能把语�
 | AMT.ORD.GOODS_ORIGINAL | 商品原价 | GOODS_PRICE | NOT_APPLICABLE | NOT_APPLICABLE | NO_CONFIRMED_IMPACT | FORBIDDEN | 待平台确认 | NOT_UNTIL_CONFIRMED | DRAFT | 商品口径的原价。旧代码有汇总，但没有共同官方定义。不代替订单原价 |
 | AMT.ORD.AFTER_DISCOUNT | 优惠后订单金额 | ORDER_PRICE | NOT_APPLICABLE | NOT_APPLICABLE | NO_CONFIRMED_IMPACT | FORBIDDEN | 待平台确认 | NOT_UNTIL_CONFIRMED | DRAFT | 优惠之后的订单级金额。京东 `orderGoodsMoney` 未被官方参考登记。不是总价，不是实付 |
 | AMT.ORD.DISCOUNT_ORDER | 订单级优惠 | DISCOUNT | NOT_APPLICABLE | UNKNOWN | NO_CONFIRMED_IMPACT | FORBIDDEN | 待平台确认 | NOT_UNTIL_CONFIRMED | DRAFT | 订单头优惠。京东摘录写明不含单品和运费优惠。不能把明细再加一遍 |
-| AMT.ORD.DISCOUNT_DETAIL | 优惠明细金额 | DISCOUNT | NOT_APPLICABLE | UNKNOWN | NO_CONFIRMED_IMPACT | FORBIDDEN | 待平台确认 | NOT_UNTIL_CONFIRMED | DRAFT | 一条优惠明细。美团数组里可以有无优惠额的骑手元素，不能当成 0 |
+| AMT.ORD.DISCOUNT_DETAIL | 优惠明细金额 | DISCOUNT | NOT_APPLICABLE | UNKNOWN | NO_CONFIRMED_IMPACT | RULE_CONTROLLED | 待平台确认 | NOT_UNTIL_CONFIRMED | DRAFT | 一条优惠明细。美团数组里可以有无优惠额的骑手元素，不能当成 0。加总只能走尚未存在的规则，不能写入订单级优惠 |
 | AMT.USR.PAYABLE | 用户应付金额 | USER_FUND | UNKNOWN | NOT_APPLICABLE | NO_CONFIRMED_IMPACT | FORBIDDEN | 待平台确认 | NOT_UNTIL_CONFIRMED | DRAFT | 平台写明的应付。京东摘录是候选且单位写分，但是否含餐盒和运费、摘录是否现行，都未确认。不是实付 |
 | AMT.USR.PAID | 用户实付金额 | USER_FUND | UNKNOWN | NOT_APPLICABLE | NO_CONFIRMED_IMPACT | FORBIDDEN | 待业务确认 | NOT_UNTIL_CONFIRMED | DRAFT | 用户最终付出。当前没有可映射字段 |
-| AMT.PAY.SUCCESS | 支付成功金额 | USER_FUND | UNKNOWN | NOT_APPLICABLE | NO_CONFIRMED_IMPACT | FORBIDDEN | 待业务确认 | DISALLOWED | DRAFT | 成功流水的合计槽位。不是订单字段的映射目标。PAY-001 |
+| AMT.PAY.SUCCESS | 支付成功金额 | USER_FUND | UNKNOWN | NOT_APPLICABLE | NO_CONFIRMED_IMPACT | RULE_CONTROLLED | 待业务确认 | DISALLOWED | DRAFT | 成功流水的合计槽位。不是订单字段的映射目标。资金方向证据不足，保持 UNKNOWN。当前无生效合计规则。PAY-001 |
 | AMT.RFD.DOCUMENT | 退款单金额 | USER_FUND | UNKNOWN | NOT_APPLICABLE | NO_CONFIRMED_IMPACT | FORBIDDEN | 待平台确认 | NOT_UNTIL_CONFIRMED | DRAFT | 退款单上的金额。不表示成功，不表示实退，不默认负数 |
-| AMT.RFD.SUCCEEDED | 退款成功金额 | USER_FUND | UNKNOWN | NOT_APPLICABLE | NO_CONFIRMED_IMPACT | FORBIDDEN | 待财务确认 | DISALLOWED | DRAFT | 成功合计槽位。旧代码按退款号相加只是 E4 |
+| AMT.RFD.SUCCEEDED | 退款成功金额 | USER_FUND | UNKNOWN | NOT_APPLICABLE | NO_CONFIRMED_IMPACT | RULE_CONTROLLED | 待财务确认 | DISALLOWED | DRAFT | 成功合计槽位。资金方向证据不足，保持 UNKNOWN。旧代码按退款号相加只是 E4，不是已生效规则。REF-003 |
 | AMT.RFD.USER_ACTUAL | 用户实退金额 | USER_FUND | UNKNOWN | NOT_APPLICABLE | NO_CONFIRMED_IMPACT | FORBIDDEN | 待财务确认 | NOT_UNTIL_CONFIRMED | DRAFT | R-09 没有这个定义。不能由成功合计改名 |
 | AMT.MCH.RECEIVABLE | 商家应收金额 | MERCHANT_FUND | UNKNOWN | NOT_APPLICABLE | NO_CONFIRMED_IMPACT | FORBIDDEN | 部分确认 | ALLOWED_IF_CONTRACT_DEFINES | DRAFT | 现仅美团 `wmPoiReceiveCent`：应收，单位分，可空，不等于总价。不是结算额 |
 | AMT.PLT.SUBSIDY | 平台补贴金额 | PLATFORM_FUND | UNKNOWN | NOT_APPLICABLE | NO_CONFIRMED_IMPACT | FORBIDDEN | 待业务确认 | NOT_UNTIL_CONFIRMED | DRAFT | 没有已确认来源。不是平台承担优惠 |
@@ -253,7 +282,7 @@ EvidenceStatus 仍写在观测上，不写进 semanticStatus。E4 不能把语�
 | AMT.GBV.MCHNT_INCOME | 团购商家总收入 | GROUP_BUY | UNKNOWN | NOT_APPLICABLE | NOT_APPLICABLE | FORBIDDEN | 待平台确认 | NOT_UNTIL_CONFIRMED | DRAFT | `mchntIncome`。不是商家应收，也不是结算额 |
 | AMT.GBV.THIRD_MCHNT_INCOME | 团购第三方商家收入 | GROUP_BUY | UNKNOWN | NOT_APPLICABLE | NOT_APPLICABLE | FORBIDDEN | 待平台确认 | NOT_UNTIL_CONFIRMED | DRAFT | `thirdMchntIncome`。不与上一列相加 |
 | AMT.GBV.THIRD_SERVICE_FEE | 团购服务费 | GROUP_BUY | UNKNOWN | UNKNOWN | NOT_APPLICABLE | FORBIDDEN | 待平台确认 | NOT_UNTIL_CONFIRMED | DRAFT | `thirdServiceFee`。不是美团春节服务费，也不从收入列里扣 |
-| AMT.UNK.UNIDENTIFIED | 未识别金额 | UNIDENTIFIED | NOT_APPLICABLE | NOT_APPLICABLE | NOT_APPLICABLE | FORBIDDEN | 无法验证 | ALLOWED_IF_CONTRACT_DEFINES | DRAFT | 语义未知时的唯一映射目标。必须保留路径和契约 |
+| AMT.UNK.UNIDENTIFIED | 未识别金额 | UNIDENTIFIED | NOT_APPLICABLE | NOT_APPLICABLE | NOT_APPLICABLE | FORBIDDEN | 无法验证 | ALLOWED_AS_UNIDENTIFIED | DRAFT | 语义未知时的唯一保存目标。不是契约已经定义了该类型。禁止参与计算 |
 
 团购类型的“允许映射”只表示将来可以指向该字段自己的编码。在单位和业务词被确认前，映射资格仍是 `NOT_UNTIL_CONFIRMED`，不能换算后写入订单类型。
 
@@ -379,13 +408,15 @@ typeCode 只携带语义身份。数值、币种、单位、精度、正负号�
 
 ## 13. 未识别金额
 
-未识别观测要保存：RawAmountValue 的 presence、rawText、fieldPath，AmountSource 的平台、接口、消息类型、契约编号、契约版本、原始报文引用。typeCode 用 `AMT.UNK.UNIDENTIFIED`。
+`AMT.UNK.UNIDENTIFIED` 的映射资格是 `ALLOWED_AS_UNIDENTIFIED`。它表示允许保存语义还没确认的原始金额，不表示契约已经定义了这个类型，也不表示语义已确认。
 
-候选映射是一条 MappingStatus 为 `DRAFT` 的提议。它不产生已确认的标准观测。
+保存时必须同时有：RawAmountValue、AmountSource、fieldPath、sourceContractId、sourceContractVersion、rawPayloadRef。presence 和 rawText 随 RawAmountValue 保留。
 
-一个字段有两个解释时，映射执行状态是 `CONFLICT`。两条候选都不是已确认观测，也不能两套都写成正式金额。原文仍然只有一份。
+未识别观测的聚合策略是 `FORBIDDEN`。它不能进入 AmountCalculationRule，也不能改映射成用户实付、商家应收、结算金额或经营成交额。
 
-语义确认后，增加映射版本，让新观测指向正式类型。已经保存的未识别观测不改写。
+候选映射是 MappingStatus 为 `DRAFT` 的提议，不是已确认观测。一个字段有两个解释时，执行状态是 `CONFLICT`。两条候选都不是已确认的标准金额，原文仍只有一份。
+
+语义确认后，用新的 mappingVersion 让以后的观测指向正式类型。已经保存的未识别观测不覆盖、不改写。
 
 ## 14. 与业务指标的边界
 
@@ -438,13 +469,14 @@ AMT-001 至 AMT-010、PAY-001 至 PAY-003、REF-001 至 REF-004、GBV-001 至 GB
 ## 20. 给 06-03-02-02 的输入
 
 1. 一个字段路径只能指向一个未停用编码，或指向未识别。
-2. 映射资格是 `NOT_UNTIL_CONFIRMED` 或 `DISALLOWED` 的编码，不能出现在生效映射里。
+2. 映射资格是 `NOT_UNTIL_CONFIRMED` 或 `DISALLOWED` 的编码，不能出现在生效映射里。`ALLOWED_AS_UNIDENTIFIED` 只能用于未识别观测。
 3. 不得把京东销售价总额映射到 `AMT.ORD.ORIGINAL`。
 4. 不得把非“总价”字段映射到 `AMT.ORD.TOTAL`。
 5. 不得使用 `AMT.FEE.DELIVERY`。
 6. 团购八列在单位确认前不写转换。
 7. 两个候选解释写成冲突，不写成两条已确认观测。
 8. 淘宝金额路径保持未识别。
+9. `AMT.PAY.SUCCESS` 和 `AMT.RFD.SUCCEEDED` 不在字段映射里赋值。它们只留给以后的计算规则，而现在没有生效规则。
 
 06-03-02-02 尚未创建。
 
@@ -462,3 +494,13 @@ AMT-001 至 AMT-010、PAY-001 至 PAY-003、REF-001 至 REF-004、GBV-001 至 GB
 | 未知字段可能变成两条已确认观测 | 区分为候选、冲突和正式观测 |
 
 本轮只改本文件。未执行测试，未提交，未推送。
+
+## 22. 第三轮收尾
+
+| 问题 | 处理 |
+| --- | --- |
+| 支付成功、退款成功的资金方向 | 建议值没有采用。证据不足，保持 `UNKNOWN`。指标影响和合计口径都不因此改变 |
+| 未识别类型使用了“契约已定义才可映射” | 改为 `ALLOWED_AS_UNIDENTIFIED` |
+| 合计槽位却写成永远禁止聚合 | 支付成功、退款成功、优惠明细改为 `RULE_CONTROLLED`。当前仍无生效规则。团购和订单级优惠维持 `FORBIDDEN` |
+
+编码仍是 39 个。`AMT.FEE.DELIVERY` 仍是 `RETIRED`。团购单位仍未确认。本轮只改本文件。未执行测试，未提交，未推送。标准金额类型到此停止扩展，下一步是 06-03-02-02 字段映射。
