@@ -308,6 +308,10 @@ trade-flow 怎样读取字段，只说明旧系统行为，不是平台官方契
 | 零个或多个修订 | 当前固定快照内，明确版本号或“未提供”对应的修订不是恰好一个 | `CONTRACT_VERSION_UNRESOLVED`。无字段结果，无 `ObservedAmount`，不写成 `UNMAPPED`。本行未执行 |
 | 接入端给出有效版本 | `contractVersionId` 属于当前快照，身份、外部版本号和正文哈希通过 | 采用该 ID。不再用外部版本号选择修订。本行未执行 |
 | 确定性解析失败后的重试 | 查找已经完成且修订不是恰好一个，期间发布了新快照 | 原任务仍失败，不换 `snapshotId`。重新处理必须是显式重放任务，不覆盖历史观测。本行未执行 |
+| `contractVersionId` 不在当前快照 | 版本表有该 ID，当前 `snapshotId` 的契约条目没有 | `CONTRACT_VERSION_UNRESOLVED`。无字段结果，无 `ObservedAmount`。本行未执行 |
+| 契约身份不一致 | 契约家族五段身份、`contractId` 或外部版本号与版本行不一致 | `CONTRACT_IDENTITY_MISMATCH`。不进入路径提取。本行未执行 |
+| 正文哈希不一致 | 契约版本正文与封存的 `bodySha256` 不一致 | `CONTRACT_VERSION_HASH_MISMATCH`。不使用部分路径，无字段结果，无 `ObservedAmount`。本行未执行 |
+| 临时读取失败 | 快照或契约版本读取尚未完成，没有得出零个、一个或多个候选修订 | 原任务用原 `snapshotId` 重试。不记成 `CONTRACT_VERSION_UNRESOLVED`，不切换最新快照。本行未执行 |
 | 部分失败 | 一个路径是对象，另一个路径是数字 | 对象为 `NON_SCALAR` 且 `TYPE_MISMATCH`。数字路径仍成功。整份报文不阻断 |
 | 坏 JSON | 原文不是 JSON | `PAYLOAD_MALFORMED`。原文还在，没有字段结果 |
 | 引用失效 | 保存引用取不回原文 | `PAYLOAD_REF_INVALID`。不读取最新报文 |
