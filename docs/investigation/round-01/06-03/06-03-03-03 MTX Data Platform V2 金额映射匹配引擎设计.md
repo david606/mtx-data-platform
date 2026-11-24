@@ -394,7 +394,7 @@ CONFLICT，保留这一个 conflictDecisionId，proposedType 为空
 | T22 | `contractVersionId` 属于当前快照，家族身份、外部版本号和正文哈希都通过，提取 `payloadCode = OK` | 提取已经成功完成。进入匹配。匹配不再根据外部版本号选择修订。本行未执行 | 否 |
 | T23 | 版本表有该 `contractVersionId`，当前快照契约条目没有 | `CONTRACT_VERSION_UNRESOLVED`。不进入提取和匹配，无字段结果，无 `ObservedAmount`。本行未执行 | 是。阻断在上游 |
 | T24 | 明确外部版本号在当前固定快照内对应零个修订 | `CONTRACT_VERSION_UNRESOLVED`。不降级为 `UNMAPPED`。本行未执行 | 是。阻断在上游 |
-| T33 | 明确外部版本号在当前固定快照内对应多个内部修订 | `CONTRACT_VERSION_UNRESOLVED`。不猜最新修订，不产生字段结果，不产生 `ObservedAmount`，不进入路径提取和匹配。本行未执行 | 是。阻断在上游 |
+| T33 | 接入端未提供 `contractVersionId`，提供了明确外部版本号，当前固定快照内该契约家族对应多个内部修订 | `CONTRACT_VERSION_UNRESOLVED`。不猜最新修订，不产生字段结果，不产生 `ObservedAmount`，不进入路径提取和匹配。本行未执行 | 是。阻断在上游 |
 | T25 | 外部版本号为“未提供”，当前固定快照内恰好一个同为“未提供”的修订 | 采用该 `contractVersionId`。校验通过后才提取和匹配。本行未执行 | 否 |
 | T26 | 外部版本号为“未提供”，当前固定快照内对应零个或多个修订 | `CONTRACT_VERSION_UNRESOLVED`。不猜最新修订，不进入匹配。本行未执行 | 是。阻断在上游 |
 | T27 | 契约家族五段身份、`contractId` 或外部版本号与版本行不一致 | `CONTRACT_IDENTITY_MISMATCH`。不进入路径提取和匹配。本行未执行 | 是。阻断在上游 |
@@ -482,6 +482,6 @@ CONFLICT，保留这一个 conflictDecisionId，proposedType 为空
 | 内容 | 位置 |
 | --- | --- |
 | T22 的输入已经包含提取成功，预期改为进入匹配，不再写成进入提取 | 第 12 节 |
-| 新增 T33：明确外部版本号对应多个内部修订时上游阻断 | 第 12 节 |
+| 新增 T33：接入端未提供 `contractVersionId`，明确外部版本号在当前固定快照内对应多个内部修订时上游阻断 | 第 12 节 |
 
 T33 和修改后的 T22 都标明未执行。没有新增错误码、状态、领域对象或数据库结构。没有执行这些验收场景。
