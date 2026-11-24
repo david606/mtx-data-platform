@@ -22,7 +22,7 @@
 | 设计决定 | 本文为了把各阶段接成一条链路而作出的选择。它不改写已冻结文档 |
 | 待确认 | 上游没有给出执行状态机、物理索引或计算规则正文 |
 
-本文已完成第六轮补充整改（三），待重新进行完整架构审查。尚未正式冻结。本次整改不表示设计已经冻结。它不代表 Pipeline、任务状态或生产映射已经存在。当前标准类型 38 个是 `DRAFT`，`AMT.FEE.DELIVERY` 是 `RETIRED`，0 个是 `ACTIVE`。已确认生产映射数量是 0。文中的 `MAPPED`、标准化和计算都是规则，不是已经发生的生产处理。测试都没有执行。
+本文已完成第七轮补充整改（四），待重新进行完整架构审查。尚未正式冻结。本次整改不表示设计已经冻结。它不代表 Pipeline、任务状态或生产映射已经存在。当前标准类型 38 个是 `DRAFT`，`AMT.FEE.DELIVERY` 是 `RETIRED`，0 个是 `ACTIVE`。已确认生产映射数量是 0。文中的 `MAPPED`、标准化和计算都是规则，不是已经发生的生产处理。测试都没有执行。
 
 ## 1. 目标、范围和非目标
 
@@ -700,20 +700,33 @@ TaskBlockResult recordTaskBlock(TaskBlockRequest request)
 TaskFinalizeResult finalizeTask(TaskFinalizeRequest request)
 ```
 
-这两个签名都不是已经存在的 Java 接口。返回值不能混用：`BLOCK_RECORDED`、`ALREADY_BLOCKED`、`LATE_BLOCK_RECORDED`、`LATE_ALREADY_RECORDED` 只属于 `recordTaskBlock`。`FINALIZED` 和 `ALREADY_FINALIZED` 只属于 `finalizeTask`。
+这两个签名都不是已经存在的 Java 接口。返回值不能混用：`BLOCK_RECORDED`、`ALREADY_BLOCKED`、`BLOCK_CONTENT_CONFLICT`、`BLOCK_IDENTITY_REJECTED`、`LATE_BLOCK_RECORDED`、`LATE_ALREADY_RECORDED` 只属于 `recordTaskBlock`。`FINALIZED`、`ALREADY_FINALIZED`、`FINALIZE_CONFLICT` 只属于 `finalizeTask`。完整性审计的 `AUDIT_RECORDED` 和 `AUDIT_ALREADY_RECORDED` 只表示审计有没有新增，不是这两个接口的返回码。
 
-有效阻断是协调边界在终态尚未提交时接受的阻断。一个 `taskId` 最多一条有效阻断。它参与终态，使结果成为 `FAILED`。
+有效阻断是协调边界在终态尚未提交时接受的第一条阻断。一个 `taskId` 最多一条有效阻断。它参与终态，使结果成为 `FAILED`。
 
-迟到阻断是终态已经提交之后才到达、并且不是在重复这条有效阻断的提交。它可以写成独立审计记录。审计记录不参与终态，也不改写 `SUCCESS`、`PARTIAL_SUCCESS`、`ALL_FIELDS_FAILED` 或 `FAILED`。
+迟到阻断是终态已经提交之后才到达、并且不是在重复这条有效阻断的 `blockIdentity`。它可以写成独立审计记录。审计记录不参与终态，也不改写 `SUCCESS`、`PARTIAL_SUCCESS`、`ALL_FIELDS_FAILED` 或 `FAILED`。
 
-| `recordTaskBlock` 返回 | 持久化 | 是否参与终态 |
-| --- | --- | --- |
-| `BLOCK_RECORDED` | 首次写入该任务的一条有效阻断 | 参与。随后的 `finalizeTask` 必须看见它 |
-| `ALREADY_BLOCKED` | 相同内容再次提交。不新增第二条有效阻断 | 仍只看原来那一条 |
-| `LATE_BLOCK_RECORDED` | 终态提交之后首次写下一条迟到阻断审计。不改有效阻断 | 不参与 |
-| `LATE_ALREADY_RECORDED` | 相同迟到内容再次提交。不新增第二条审计 | 不参与 |
+阻断幂等不比较整个请求对象，也不把 `taskAttemptId` 放进身份。四个概念分开：
 
-终态尚未提交时，内容与已有有效阻断不一致，是完整性异常。不覆盖原记录，也不写成迟到审计。终态已经提交后，重复原有效阻断仍返回 `ALREADY_BLOCKED`。这时的其他阻断内容走迟到审计。`recordTaskBlock` 可以在结果中带上当前任务终态供调用方查看，但该终态不是它的返回码。旧 Worker 和旧 `taskAttemptId` 也走这张表，不能另开一条绕过边界的写入。
+| 概念 | 作用 |
+| --- | --- |
+| `taskId` | 逻辑任务。有效阻断的名额按它计算，一个任务最多一条 |
+| `blockIdentity` | 同一逻辑阻断事件。等于 `taskId`、稳定阻断码、阻断主体。主体是具体字段路径，或任务级阻断的固定标记 |
+| `blockContent` | 该身份下必须稳定的事实。按约定字段比较，不是异常文本或整个请求 |
+| `taskAttemptId` | 发现这次阻断的尝试。只作为记录属性。技术重试更换它，不因此变成另一条阻断 |
+
+有效阻断和迟到审计使用同一套 `blockIdentity`。记录种类由终态是否已经提交决定，不另造一套身份。
+
+| `recordTaskBlock` 返回 | 判定 | 持久化 | 是否参与终态 |
+| --- | --- | --- | --- |
+| `BLOCK_RECORDED` | 终态未提交，且该任务还没有有效阻断 | 新增一条有效阻断，记下本次 `blockIdentity` 和 `blockContent` | 参与 |
+| `ALREADY_BLOCKED` | 同一个 `blockIdentity`，且 `blockContent` 与已保存的有效阻断相同。换 `taskAttemptId` 或换 Worker 也一样 | 不新增 | 仍只看原来那一条 |
+| `BLOCK_CONTENT_CONFLICT` | 同一个 `blockIdentity`，但 `blockContent` 与已保存记录不同 | 不新增，不覆盖 | 不把这次内容纳入终态 |
+| `BLOCK_IDENTITY_REJECTED` | 终态未提交，已有另一条 `blockIdentity` 的有效阻断。内容相同也不合并 | 不新增 | 不参与。原有效阻断继续参与 |
+| `LATE_BLOCK_RECORDED` | 终态已提交，且这个 `blockIdentity` 不是已保存的有效阻断，也还没有迟到审计 | 新增一条迟到审计 | 不参与 |
+| `LATE_ALREADY_RECORDED` | 终态已提交，同一个迟到 `blockIdentity`，`blockContent` 也相同 | 不新增第二条审计 | 不参与 |
+
+同一 Worker 的技术重试沿用原来的 `blockIdentity` 和 `blockContent`，返回 `ALREADY_BLOCKED` 或 `LATE_ALREADY_RECORDED`。两个 Worker 并发提交同一个身份和同一内容时，一个返回首次记录，另一个返回对应的已存在结果，只留一条记录。终态提交后再次提交原有效阻断，内容相同时仍返回 `ALREADY_BLOCKED`，不改写成迟到审计。`recordTaskBlock` 可以带上当前任务终态供查看，但该终态不是它的返回码。
 
 协调边界内的可见性规则：
 
@@ -725,13 +738,24 @@ TaskFinalizeResult finalizeTask(TaskFinalizeRequest request)
 
 同一边界把阻断写入和终态提交排成先后关系。阻断先被边界接受时，随后的终态判定必须看见这条有效阻断。终态先提交时，随后的新阻断是迟到阻断。没有“有效阻断已经接受、终态却看不见”的第三种结果。内存中的异常在 `recordTaskBlock` 返回前不进入这个顺序。
 
-`finalizeTask` 不接受调用方自选的终态作为权威值。协调方根据当前持久化依据计算终态，再与请求中的终态和依据对照。它不返回 `recordTaskBlock` 的四种结果。
+`finalizeTask` 不接受调用方自选的终态作为权威值。协调方根据当前持久化依据计算终态，再与请求中的终态和依据对照。它不返回 `recordTaskBlock` 的结果。
 
-| `finalizeTask` 返回 | 行为 |
+| `finalizeTask` 返回 | 行为 | 审计持久化 |
+| --- | --- | --- |
+| `FINALIZED` | 尚无终态，且请求依据与当前持久化依据一致。提交计算得到的终态和依据 | 不写终态后完整性审计 |
+| `ALREADY_FINALIZED` | 终态已提交，且请求的终态和依据与已提交结果相同。不另写终态，也不重新打开任务 | 不新增审计 |
+| `FINALIZE_CONFLICT` | 终态已提交，但请求的终态或依据不一致。不提交新终态，不重新打开任务，也不调用 `recordTaskBlock` | 按下面的审计身份处理 |
+
+终态尚未提交时，请求依据与当前持久化依据不一致，仍是完整性异常。不提交终态，不写成有效阻断，也不进入终态后的完整性审计。
+
+终态后的完整性审计身份是 `taskId`、请求声称的终态，以及请求所依据的字段结果身份和有效阻断身份。不包含 `taskAttemptId`，也不使用整个请求对象。它与 `blockIdentity` 不是同一种记录。
+
+| 审计持久化结果 | 行为 |
 | --- | --- |
-| `FINALIZED` | 请求依据与当前持久化依据一致，且尚无终态。提交计算得到的终态和依据 |
-| `ALREADY_FINALIZED` | 已经提交。返回同一份权威终态和依据。相同请求不另写一条，也不重新打开任务 |
-| 依据不一致 | 完整性异常。不提交，也不因为请求先到就采纳。已有终态保持不变 |
+| `AUDIT_RECORDED` | 该审计身份第一次写下一条完整性审计 |
+| `AUDIT_ALREADY_RECORDED` | 同一审计身份再次提交。不新增第二条 |
+
+这条审计不是有效阻断，也不能在以后被当成有效阻断。它不参与终态，不能把 `SUCCESS`、`PARTIAL_SUCCESS`、`ALL_FIELDS_FAILED` 或 `FAILED` 改成另一状态。`finalizeTask` 的返回码保持 `FINALIZE_CONFLICT`，审计结果只说明这条审计是新建还是已存在。
 
 `SUCCESS` 不能覆盖 `FAILED`。`FAILED` 不能覆盖已经合法完成的 `SUCCESS`。`PARTIAL_SUCCESS` 和 `ALL_FIELDS_FAILED` 同样不能互相覆盖，也不能覆盖另外两类已提交终态。集合未齐且没有已持久化阻断时，不提交成功类终态，任务保持 `RUNNING`。
 
@@ -744,7 +768,7 @@ TaskFinalizeResult finalizeTask(TaskFinalizeRequest request)
 | `PARTIAL_SUCCESS` | 没有上述阻断，至少一个字段成功，同时至少一个字段级失败 |
 | `ALL_FIELDS_FAILED` | 没有上述阻断，权威集合非空，全部字段都是字段级失败，没有字段成功 |
 
-空字段集合不是 `ALL_FIELDS_FAILED`。全部字段为合法 `UNMAPPED` 或 `CONFLICT` 也不是。新的 `taskAttemptId` 参加判定时，使用该 `taskId` 上已经持久化的字段结果，包括旧尝试已经完成的字段。旧尝试拿过期终态再次提交时，按依据不一致处理，不覆盖已提交终态。
+空字段集合不是 `ALL_FIELDS_FAILED`。全部字段为合法 `UNMAPPED` 或 `CONFLICT` 也不是。新的 `taskAttemptId` 参加判定时，使用该 `taskId` 上已经持久化的字段结果，包括旧尝试已经完成的字段。旧尝试再提交相同终态和相同依据时返回 `ALREADY_FINALIZED`。旧尝试提交不一致依据时返回 `FINALIZE_CONFLICT`，并按第 11.1 节留下或复用完整性审计。两种都不覆盖已提交终态，也都不重新打开任务。
 
 这四层不能合并：字段处理状态、Pipeline 步骤状态、任务状态、`mappingStatus`。
 
@@ -754,7 +778,7 @@ TaskFinalizeResult finalizeTask(TaskFinalizeRequest request)
 
 ## 12. 追踪
 
-设计决定：日志要能关联 `processingId`、`taskId`、`taskAttemptId`、`rawPayloadRef`、`contractVersionId`、`snapshotId`、观测身份和 `fieldPath`。普通日志不写入原始报文字节。
+设计决定：日志要能关联 `processingId`、`taskId`、`taskAttemptId`、`blockIdentity`、`rawPayloadRef`、`contractVersionId`、`snapshotId`、观测身份和 `fieldPath`。普通日志不写入原始报文字节。`taskAttemptId` 不代替 `blockIdentity`。
 
 建议的技术计数包括提取次数、提取失败次数、新建观测次数、三种映射结果次数、标准化成功和失败次数、计算成功次数、任务失败次数、全部字段失败次数、重试次数和耗时。这些不是财务指标。计数名称没有进入现有系统。
 
@@ -844,15 +868,24 @@ TaskFinalizeResult finalizeTask(TaskFinalizeRequest request)
 | E2E-076 | 有效阻断与最后一个字段完成并发，且阻断先被边界接受 | 字段结果可以保留。`recordTaskBlock` 返回 `BLOCK_RECORDED`。`finalizeTask` 返回 `FINALIZED`，终态只有 `FAILED` | 是 | 未执行 |
 | E2E-087 | 有效阻断先于终态提交 | `recordTaskBlock` 返回 `BLOCK_RECORDED`，持久化一条有效阻断。`finalizeTask` 看见它并返回 `FINALIZED`。终态为 `FAILED` | 是 | 未执行 |
 | E2E-088 | 终态已经是 `SUCCESS` 后，旧 Worker 第一次提交阻断 | `recordTaskBlock` 返回 `LATE_BLOCK_RECORDED`，持久化一条独立审计。返回码不是 `ALREADY_FINALIZED`。终态保持 `SUCCESS` | 否 | 未执行 |
-| E2E-089 | 旧 `taskAttemptId` 对已终态任务提交过期终态 | `finalizeTask` 在依据一致时返回 `ALREADY_FINALIZED`，依据不一致时是完整性异常。都不返回阻断接口的结果，也不重新打开任务。终态不变 | 是。仅依据不一致时记完整性异常 | 未执行 |
-| E2E-090 | 终态提交前，相同有效阻断再次提交 | 第二次 `recordTaskBlock` 返回 `ALREADY_BLOCKED`。仍只有一条有效阻断。终态尚未提交 | 否 | 未执行 |
-| E2E-091 | 相同迟到阻断再次提交 | 第二次 `recordTaskBlock` 返回 `LATE_ALREADY_RECORDED`。不新增第二条审计。终态不变 | 否 | 未执行 |
-| E2E-092 | 终态已经是 `PARTIAL_SUCCESS` 后提交阻断 | `recordTaskBlock` 返回 `LATE_BLOCK_RECORDED`，只写审计。终态保持 `PARTIAL_SUCCESS` | 否 | 未执行 |
-| E2E-093 | 终态已经是 `ALL_FIELDS_FAILED` 后提交阻断 | `recordTaskBlock` 返回 `LATE_BLOCK_RECORDED`，只写审计。终态保持 `ALL_FIELDS_FAILED` | 否 | 未执行 |
-| E2E-094 | 终态已经是 `FAILED` 后，再次提交与有效阻断相同的内容 | `recordTaskBlock` 返回 `ALREADY_BLOCKED`。不新增审计，不改终态 | 是。任务此前已经阻断 | 未执行 |
-| E2E-095 | 终态已经是 `FAILED` 后，提交另一条阻断内容 | `recordTaskBlock` 返回 `LATE_BLOCK_RECORDED`，只写审计。终态保持 `FAILED` | 是。任务此前已经阻断 | 未执行 |
-| E2E-077 | 两个 Worker 提交相同终态和相同依据 | `FINALIZED` 之后是 `ALREADY_FINALIZED`，返回同一终态 | 否 | 未执行 |
-| E2E-078 | 两个 Worker 提交不同终态或不同依据，任务尚未终态 | 与当前持久化依据一致的请求由 `finalizeTask` 返回 `FINALIZED`。不一致的请求不提交。不采用先写入者。终态只有一个 | 是。仅依据不一致的一方记完整性异常 | 未执行 |
+| E2E-096 | 终态已提交后，再提交相同终态和相同依据 | `finalizeTask` 返回 `ALREADY_FINALIZED`。不新增完整性审计，不重新打开任务。终态不变 | 否 | 未执行 |
+| E2E-089 | 终态已提交后，旧 `taskAttemptId` 提交不一致依据 | `finalizeTask` 返回 `FINALIZE_CONFLICT`。审计持久化结果为 `AUDIT_RECORDED`，新增一条完整性审计。该审计不是有效阻断，不参与终态。任务不重新打开，终态不变 | 否。终态此前已经提交 | 未执行 |
+| E2E-090 | 同一 Worker 用新 `taskAttemptId` 重试同一 `blockIdentity` 和 `blockContent` | 第二次 `recordTaskBlock` 返回 `ALREADY_BLOCKED`。不新增记录。原记录仍是有效阻断并参与终态。终态尚未提交 | 否 | 未执行 |
+| E2E-091 | 同一迟到 `blockIdentity` 和 `blockContent` 再次提交 | 第二次 `recordTaskBlock` 返回 `LATE_ALREADY_RECORDED`。不新增第二条审计。记录仍是迟到审计，不参与终态。终态不变 | 否 | 未执行 |
+| E2E-094 | 终态已经是 `FAILED` 后，用同一 `blockIdentity` 和 `blockContent` 再提交 | `recordTaskBlock` 返回 `ALREADY_BLOCKED`。不新增审计。原记录仍是有效阻断。终态保持 `FAILED` | 是。任务此前已经阻断 | 未执行 |
+| E2E-095 | 终态已经是 `FAILED` 后，提交另一个 `blockIdentity` | `recordTaskBlock` 返回 `LATE_BLOCK_RECORDED`，新增一条迟到审计。不参与终态。终态保持 `FAILED` | 是。任务此前已经阻断 | 未执行 |
+| E2E-097 | 两个 Worker 并发提交同一个 `blockIdentity` 和 `blockContent`，终态未提交 | 一个 `BLOCK_RECORDED`，另一个 `ALREADY_BLOCKED`。只新增一条有效阻断。它参与终态。任务随后可为 `FAILED` | 是 | 未执行 |
+| E2E-098 | 已有有效阻断后，同一 `blockIdentity` 提交不同 `blockContent` | `recordTaskBlock` 返回 `BLOCK_CONTENT_CONFLICT`。不新增、不覆盖。原有效阻断继续参与终态 | 是。原阻断仍然有效 | 未执行 |
+| E2E-099 | 已有有效阻断后、终态未提交时，另一 `blockIdentity` 携带相同 `blockContent` | `recordTaskBlock` 返回 `BLOCK_IDENTITY_REJECTED`。不新增记录。不因内容相同而合并。原有效阻断继续参与终态 | 是。原阻断仍然有效 | 未执行 |
+| E2E-100 | 同一终态后完整性审计再次提交 | `finalizeTask` 仍返回 `FINALIZE_CONFLICT`。审计持久化结果为 `AUDIT_ALREADY_RECORDED`，不新增第二条。审计不参与终态，终态不变 | 否。终态此前已经提交 | 未执行 |
+| E2E-101 | 终态已经是 `SUCCESS` 时提交不一致依据 | `finalizeTask` 返回 `FINALIZE_CONFLICT`，首次审计为 `AUDIT_RECORDED`。不是有效阻断，不参与终态。终态保持 `SUCCESS` | 否 | 未执行 |
+| E2E-102 | 终态已经是 `PARTIAL_SUCCESS` 时提交不一致依据 | `finalizeTask` 返回 `FINALIZE_CONFLICT`，首次审计为 `AUDIT_RECORDED`。不是有效阻断，不参与终态。终态保持 `PARTIAL_SUCCESS` | 否 | 未执行 |
+| E2E-103 | 终态已经是 `ALL_FIELDS_FAILED` 时提交不一致依据 | `finalizeTask` 返回 `FINALIZE_CONFLICT`，首次审计为 `AUDIT_RECORDED`。不是有效阻断，不参与终态。终态保持 `ALL_FIELDS_FAILED` | 否 | 未执行 |
+| E2E-104 | 终态已经是 `FAILED` 时提交不一致依据 | `finalizeTask` 返回 `FINALIZE_CONFLICT`，首次审计为 `AUDIT_RECORDED`。不进入有效阻断链路，不参与终态。终态保持 `FAILED` | 是。任务此前已经阻断 | 未执行 |
+| E2E-092 | 终态已经是 `PARTIAL_SUCCESS` 后提交另一个 `blockIdentity` | `recordTaskBlock` 返回 `LATE_BLOCK_RECORDED`，新增一条迟到审计。不参与终态。终态保持 `PARTIAL_SUCCESS` | 否 | 未执行 |
+| E2E-093 | 终态已经是 `ALL_FIELDS_FAILED` 后提交另一个 `blockIdentity` | `recordTaskBlock` 返回 `LATE_BLOCK_RECORDED`，新增一条迟到审计。不参与终态。终态保持 `ALL_FIELDS_FAILED` | 否 | 未执行 |
+| E2E-077 | 两个 Worker 在终态提交前提交相同终态和相同依据 | 一个 `finalizeTask` 返回 `FINALIZED`，另一个返回 `ALREADY_FINALIZED`。不新增完整性审计 | 否 | 未执行 |
+| E2E-078 | 两个 Worker 提交不同终态或不同依据，任务尚未终态 | 与当前持久化依据一致的请求由 `finalizeTask` 返回 `FINALIZED`。不一致的请求不提交，不写终态后完整性审计，也不创建有效阻断。终态只有一个 | 是。仅依据不一致的一方记完整性异常 | 未执行 |
 | E2E-079 | 空字段集合、全部合法 `UNMAPPED`、全部合法 `CONFLICT` | 都不是 `ALL_FIELDS_FAILED`。空集合仍是带空路径标记的 `SUCCESS` | 否 | 未执行 |
 | E2E-080 | 两个任务为同一观测固定不同规则版本 | 各自的 `versionFixKey` 保留自己的版本。形成两个标准化逻辑身份 | 否 | 未执行。版本号尚未分配 |
 | E2E-081 | 两个任务算出相同的 `normalizationIdentity` | 标准化结果一个 `CREATED`，另一个 `ALREADY_EXISTS`。不因 `taskId` 不同再插一条 | 否 | 未执行 |
@@ -873,7 +906,7 @@ TaskFinalizeResult finalizeTask(TaskFinalizeRequest request)
 5. 哪些字段级失败可以自动进入 `RETRY_WAITING` 未定。`CONTRACT_PATHS_EMPTY` 的任务状态是 `SUCCESS`，并用空路径清单与有字段的成功区分。已写出的领域结果不因后续失败而覆盖。
 6. 业务对象标识的来源未定。租户模型未定。`taskId` 和 `replayRequestId` 的生成算法待存储设计。没有稳定事件身份的来源，重复投递规则待来源契约确认。
 7. 外部版本不能唯一对应修订时，06-03-02-03 与 06-03-03-01、06-03-03-03 仍不一致。这是未完成的跨文档决策。当前没有统一契约，该场景不能进入实现验收。
-8. 有效阻断和迟到阻断审计是两种逻辑记录。物理表仍待存储设计。失败不写入 `ObservedAmount`。迟到阻断审计不参与终态。
+8. 有效阻断、迟到阻断审计和终态后完整性审计是三种逻辑记录。`blockIdentity` 已经定义。物理表仍待存储设计。失败不写入 `ObservedAmount`。后两种审计不参与终态。
 
 ## 15. 架构决策
 
@@ -943,5 +976,9 @@ TaskFinalizeResult finalizeTask(TaskFinalizeRequest request)
 ## 24. 第六轮补充修订（三）
 
 第六轮补充整改（三）完成，待重新进行完整架构审查。本轮只区分有效阻断和迟到阻断的返回值与持久化语义。`recordTaskBlock` 不返回 `ALREADY_FINALIZED`。R7 的两阶段上下文没有改。没有正式冻结。没有设计 DDL。E2E 测试都没有执行。
+
+## 25. 第七轮补充修订（四）
+
+第七轮补充整改（四）完成，待重新进行完整架构审查。本轮定义 `blockIdentity` 与 `blockContent`，并把终态后的不一致 `finalizeTask` 写成独立完整性审计。该审计不进入有效阻断。没有改 R7、R8、R9 和 R12。没有正式冻结。没有设计 DDL。E2E 测试都没有执行。
 
 本文没有修改 06-03-01、06-03-02-01、06-03-02-02、06-03-02-03、06-03-03-01、06-03-03-02、06-03-03-03、06-03-03-04 和 06-03-03-05。没有 Java 实现，没有 DDL，没有新表，没有新模块。
