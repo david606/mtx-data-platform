@@ -1318,6 +1318,13 @@ Pipeline 的顺序不变：原文、原始金额、来源、按固定快照匹�
 | 恰好一个修订 | 外部版本号或“未提供”在当前固定快照内恰好一个对应修订 | 确定 `contractVersionId`。正文校验通过后进入路径提取。本行未执行 |
 | 零个修订 | 外部版本号在当前固定快照内没有对应修订 | `CONTRACT_VERSION_UNRESOLVED`。阻断，无字段结果，无 `ObservedAmount`，不写成 `UNMAPPED`。本行未执行 |
 | 多个“未提供” | 报文只有外部版本号，当前固定快照内对应修订多于一个 | `CONTRACT_VERSION_UNRESOLVED`。阻断，不猜最新修订，无字段结果，无 `ObservedAmount`，不写成 `UNMAPPED`。本行未执行 |
+| 明确外部版本号重复 | 同一契约家族、同一固定快照内，两个不同 `contractVersionId` 的外部版本号相同且不是“未提供” | `CONTRACT_VERSION_UNRESOLVED`。阻断，无字段结果，无 `ObservedAmount`，不猜最新修订。本行未执行 |
+| 接入端提供有效 `contractVersionId` | 该 ID 在当前快照契约条目中，家族身份、外部版本号和正文哈希都通过 | 采用该 ID 并继续路径提取。不再用外部版本号选择修订。本行未执行 |
+| `contractVersionId` 不在当前快照 | 版本表有该 ID，当前 `snapshotId` 的契约条目没有 | `CONTRACT_VERSION_UNRESOLVED`。阻断，无字段结果，无 `ObservedAmount`。本行未执行 |
+| 契约身份不一致 | 候选版本与接入来源的契约家族身份、`contractId` 或外部版本号不一致 | `CONTRACT_IDENTITY_MISMATCH`。阻断，不进入路径提取。本行未执行 |
+| 正文哈希不一致 | 候选契约版本的正文哈希与封存值不一致 | `CONTRACT_VERSION_HASH_MISMATCH`。阻断，不使用部分路径，无字段结果，无 `ObservedAmount`。本行未执行 |
+| 临时读取失败 | 快照或契约版本读取尚未完成，没有得出零个、一个或多个修订 | 允许原任务重试，仍用原 `snapshotId`，不切换最新快照。不得记成 `CONTRACT_VERSION_UNRESOLVED`。本行未执行 |
+| 确定性解析失败 | 固定快照内查找已经完成，对应修订为零个或多个 | `CONTRACT_VERSION_UNRESOLVED`。原任务重复重试仍然失败，不切换 `snapshotId`。新快照发布后必须创建显式重放任务。本行未执行 |
 | 目录变化 | 新目录把类型改为 `ACTIVE` 后发布新快照 | 旧快照仍指向旧目录，类型资格不变 |
 | 目录数量 | 条目数和 `itemCount` 不一致 | 封存失败；已封存的目录被改少时 Worker 拒绝 |
 | 重试 | 新快照已发布 | 原任务仍用原 `snapshotId` 和原目录版本。确定性解析失败不因此恢复，也不改读新快照。本行未执行 |
