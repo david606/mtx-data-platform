@@ -87,10 +87,10 @@
 
 | 输出 | 何时出现 |
 | --- | --- |
-| 一条 `ObservedAmount`，`mappingStatus = MAPPED` | 该具体路径恰好命中一条映射，并且该版本不是 `ALLOWED_AS_UNIDENTIFIED` |
+| 一条 `ObservedAmount`，`mappingStatus = MAPPED` | 该具体路径恰好命中一条映射，并且资格是 `ALLOWED_IF_CONTRACT_DEFINES` |
 | 一条 `ObservedAmount`，`mappingStatus = UNMAPPED` | 没有命中；或命中的版本资格是 `ALLOWED_AS_UNIDENTIFIED` |
 | 一条 `ObservedAmount`，`mappingStatus = CONFLICT` | 恰好命中一条冲突决定 |
-| 任务失败 | 快照装载失败、契约条目对不上、同一字段多重命中。不写该字段的观测，不改读最新快照 |
+| 任务失败 | 快照装载失败、契约条目对不上、同一字段多重命中，或唯一映射的资格是 `NOT_UNTIL_CONFIRMED`、`DISALLOWED`、`CONFLICT_ONLY`。不写该字段的 `MAPPED`，不改读最新快照 |
 | 不写观测 | `fieldCode` 不是 `OK`。这不是任务失败 |
 
 `MAPPED` 只表示这次执行引用了哪一版映射。它不表示 `semanticStatus` 已经升级，不表示证据已经足够，也不表示可以进入 `AmountCalculation`。
@@ -145,13 +145,16 @@
 2. 确认输入里的 `contractVersionId` 出现在该快照的契约条目中，正文哈希与条目和版本行一致。条目中没有，或哈希不一致：任务失败。不猜另一个修订。
 3. 取出该契约版本、该具体路径的全部映射条目和全部冲突条目。`ACTIVE` 和 `RETIRED` 都保留。
 4. 保留 `effectiveFrom <= receivedAt`，且右端点为空或 `receivedAt < effectiveTo` 的条目。
-5. 恰好一条映射、零条冲突：使用该 `mappingVersionId`。若该版本资格是 `ALLOWED_AS_UNIDENTIFIED`，执行状态是 `UNMAPPED`，并抄录该资格。否则执行状态是 `MAPPED`。
+5. 恰好一条映射、零条冲突：读取该版本的 `mappingEligibility`。按下面五种分别处理，不用“不是 `ALLOWED_AS_UNIDENTIFIED` 就是 `MAPPED`”：
+   - `ALLOWED_IF_CONTRACT_DEFINES`：使用该 `mappingVersionId`，执行状态是 `MAPPED`。
+   - `ALLOWED_AS_UNIDENTIFIED`：执行状态是 `UNMAPPED`，保留该资格和类型编码。
+   - `NOT_UNTIL_CONFIRMED`、`DISALLOWED`、`CONFLICT_ONLY`：快照完整性异常，任务失败。不形成该字段的 `MAPPED`，不降成 `UNMAPPED`，不改读最新快照。
 6. 恰好一条冲突、零条映射：执行状态是 `CONFLICT`，保留这一个 `conflictDecisionId`。`proposedType` 为空。
 7. 映射和冲突都没有：执行状态是 `UNMAPPED`。映射引用和 `proposedType` 为空。
 8. 两条及以上映射，或至少一条映射与至少一条冲突同时命中：任务失败。不选择，不降成 `UNMAPPED`，不改读最新快照。
 9. 两条及以上冲突决定：任务失败，视为快照完整性异常。不任选 `conflictDecisionId`，不降成 `UNMAPPED`，不使用该字段已经读到的部分匹配。
 
-同一报文的其他具体路径各自按自己的条目匹配。某一个路径是唯一 `CONFLICT` 或 `UNMAPPED` 时，其他路径继续。第 8 步或第 9 步失败的是整次任务，不是把该路径改写成另一种执行状态后继续提交。
+同一报文的其他具体路径各自按自己的条目匹配。某一个路径是唯一 `CONFLICT` 或 `UNMAPPED` 时，其他路径继续。第 5 步的非法资格、第 8 步或第 9 步失败的是整次任务，不是把该路径改写成另一种执行状态后继续提交。
 
 `candidateDisposition` 不读取。Worker 不读取草稿。
 
@@ -194,9 +197,9 @@ observationIdentity =
 | `evidenceStatus` | 命中时抄录。未命中时用 `NONE`。有 `E1-A` 不表示业务已确认 |
 | `mappingEligibility` | 五种取值沿用 06-03-02-01。命中时抄录，未命中时为空。资格不是执行状态 |
 
-发布时已经拒绝的资格是 `NOT_UNTIL_CONFIRMED`、`DISALLOWED`、`CONFLICT_ONLY`。它们不应作为生效映射进入快照。若装载校验已经通过的条目上仍然出现这些资格，本文不把它们悄悄改成 `MAPPED`。这是否在装载阶段就应视为快照损坏，06-03-02-03 的第 14 节没有单独原句，见第 14 节待确认。
+发布门槛负责阻止 `NOT_UNTIL_CONFIRMED`、`DISALLOWED`、`CONFLICT_ONLY` 作为生效映射进入快照。Worker 在快照已经加载之后，仍按第 6 节第 5 步检查唯一命中映射的资格。这三种资格是快照完整性异常：任务失败，不形成该字段的 `MAPPED`，不降成 `UNMAPPED`，不忽略资格，也不改读最新快照。06-03-02-03 第 14 节没有单独写这一步。本文只补匹配引擎的防御，不改那份冻结文档。
 
-`ALLOWED_AS_UNIDENTIFIED` 可以进入快照，但执行状态保持 `UNMAPPED`。
+`ALLOWED_IF_CONTRACT_DEFINES` 是唯一可以写成 `MAPPED` 的资格。`ALLOWED_AS_UNIDENTIFIED` 可以进入快照，但执行状态保持 `UNMAPPED`，并保留资格和类型编码。
 
 转换策略只有 `NO_CONVERT`。匹配不把分换成元，不补 0，不取绝对值，不舍入。
 
@@ -308,7 +311,8 @@ CONFLICT，保留这一个 conflictDecisionId，proposedType 为空
 
 ```text
 装载哈希不符、契约条目缺失，
-或同一字段命中两条映射、映射与冲突同时命中、两条冲突决定
+或同一字段命中两条映射、映射与冲突同时命中、两条冲突决定，
+或唯一映射的资格是 NOT_UNTIL_CONFIRMED、DISALLOWED、CONFLICT_ONLY
         |
         v
 任务失败
@@ -321,7 +325,9 @@ CONFLICT，保留这一个 conflictDecisionId，proposedType 为空
 
 | 情况 | 级别 | 结果 |
 | --- | --- | --- |
-| `fieldCode = OK`，唯一映射命中，资格不是 `ALLOWED_AS_UNIDENTIFIED` | 字段 | `MAPPED`。不阻断任务 |
+| `fieldCode = OK`，唯一映射命中，资格是 `ALLOWED_IF_CONTRACT_DEFINES` | 字段 | `MAPPED`。不阻断任务 |
+| `fieldCode = OK`，唯一映射命中，资格是 `ALLOWED_AS_UNIDENTIFIED` | 字段 | `UNMAPPED`。保留资格和类型编码。不阻断任务 |
+| `fieldCode = OK`，唯一映射命中，资格是 `NOT_UNTIL_CONFIRMED`、`DISALLOWED` 或 `CONFLICT_ONLY` | 任务 | 快照完整性异常。不形成该字段的 `MAPPED`，不降成 `UNMAPPED`，不改读最新快照 |
 | `fieldCode = OK`，没有命中 | 字段 | `UNMAPPED`。不阻断任务 |
 | `fieldCode = OK`，唯一冲突决定 | 字段 | `CONFLICT`。其他成功字段继续。不阻断任务 |
 | `TYPE_MISMATCH` | 字段 | 保留实际 `presence`。不进入匹配，不形成观测。其他成功字段继续 |
@@ -337,7 +343,7 @@ CONFLICT，保留这一个 conflictDecisionId，proposedType 为空
 
 字段级失败不把整份报文标成没有来过。任务级失败不自动切换快照。
 
-同一任务里，一个路径触发第 6 节第 8 步或第 9 步之后，其他路径是否已经写出观测、写入是否要一起撤销，06-03-02-03 和 06-03-03-02 都没有规定存储事务。本文不补充事务规则。已经按同一身份写成功的观测，重试时仍然返回原观测，不被后来的失败改写。
+同一任务里，一个路径触发第 6 节第 5 步的非法资格、第 8 步或第 9 步之后，其他路径是否已经写出观测、写入是否要一起撤销，06-03-02-03 和 06-03-03-02 都没有规定存储事务。本文不补充事务规则。已经按同一身份写成功的观测，重试时仍然返回原观测，不被后来的失败改写。
 
 ## 12. 测试场景
 
@@ -345,10 +351,10 @@ CONFLICT，保留这一个 conflictDecisionId，proposedType 为空
 
 | 编号 | 输入 | 预期 | 是否阻断任务 |
 | --- | --- | --- | --- |
-| T01 | `fieldCode = OK`。一条映射窗口的 `effectiveFrom` 等于 `receivedAt`，右端点更晚 | 命中该映射。资格不是 `ALLOWED_AS_UNIDENTIFIED` 时为 `MAPPED` | 否 |
+| T01 | `fieldCode = OK`。一条映射窗口的 `effectiveFrom` 等于 `receivedAt`，右端点更晚，资格是 `ALLOWED_IF_CONTRACT_DEFINES` | 命中该映射，执行状态是 `MAPPED` | 否 |
 | T02 | 同一条窗口的 `effectiveTo` 等于 `receivedAt` | 这条窗口不命中。若没有其他命中，则为 `UNMAPPED` | 否 |
-| T03 | 快照条目生命周期是 `ACTIVE`，`receivedAt` 落在窗口内，资格允许作为生效映射 | `MAPPED`。抄录 `mappingId`、`mappingVersion`、`proposedType`。`Money` 为空 | 否 |
-| T04 | 快照条目生命周期是 `RETIRED`，`receivedAt` 落在该窗口内，`processedAt` 已经晚于右端点 | 仍命中该映射，执行状态是 `MAPPED`。不因 `RETIRED` 改成 `UNMAPPED` | 否 |
+| T03 | 快照条目生命周期是 `ACTIVE`，`receivedAt` 落在窗口内，资格是 `ALLOWED_IF_CONTRACT_DEFINES` | `MAPPED`。抄录 `mappingId`、`mappingVersion`、`proposedType`。`Money` 为空 | 否 |
+| T04 | 快照条目生命周期是 `RETIRED`，`receivedAt` 落在该窗口内，`processedAt` 已经晚于右端点，资格是 `ALLOWED_IF_CONTRACT_DEFINES` | 仍命中该映射，执行状态是 `MAPPED`。不因 `RETIRED` 改成 `UNMAPPED` | 否 |
 | T05 | 该具体路径在快照中没有任何落入窗口的映射或冲突。配置里可以有未发布草稿 | `UNMAPPED`。映射引用和 `proposedType` 为空。`semanticStatus = 无法验证` | 否 |
 | T06 | 恰好一条冲突决定落入窗口，没有映射落入窗口 | `CONFLICT`。保留这一个 `conflictDecisionId`。`proposedType` 为空。不从候选中选择 | 否 |
 | T07 | 同一字段、同一 `receivedAt` 落入两条映射窗口 | 任务失败。不挑选，不降成 `UNMAPPED`，不改读最新快照 | 是 |
@@ -363,6 +369,9 @@ CONFLICT，保留这一个 conflictDecisionId，proposedType 为空
 | T16 | 输入的 `contractVersionId` 不在该快照契约条目中 | 任务失败。不猜“未提供”对应的另一个修订 | 是 |
 | T17 | 提取 `payloadCode` 不是 `OK` | 匹配不启动。观测条数为 0 | 是。阻断发生在提取，匹配不补造金额 |
 | T18 | 用当前仓库的真实状态：没有已发布生产映射窗口 | `fieldCode = OK` 的路径是 `UNMAPPED`。没有 `MAPPED`，也没有 `AmountCalculation` | 否 |
+| T19 | 唯一映射命中，资格是 `NOT_UNTIL_CONFIRMED` | 任务失败，视为快照完整性异常。不形成该字段的 `MAPPED`，不降成 `UNMAPPED`，不切换快照 | 是 |
+| T20 | 唯一映射命中，资格是 `DISALLOWED` | 任务失败，视为快照完整性异常。不形成该字段的 `MAPPED`，不降成 `UNMAPPED`，不切换快照 | 是 |
+| T21 | 唯一映射命中，资格是 `CONFLICT_ONLY` | 任务失败，视为快照完整性异常。不形成该字段的 `MAPPED`，不降成 `UNMAPPED`，不切换快照 | 是 |
 
 ## 13. 设计决策
 
@@ -382,7 +391,7 @@ CONFLICT，保留这一个 conflictDecisionId，proposedType 为空
 
 1. 第 2 节的三处上游差异没有在本文中消掉。要消掉必须先修订对应的冻结文档。
 2. 一个路径多重命中导致任务失败时，同一任务中其他路径已经写出的观测是否一起撤销，上游没有存储事务。本文不规定。
-3. 装载已经通过、但条目资格仍是 `NOT_UNTIL_CONFIRMED`、`DISALLOWED` 或 `CONFLICT_ONLY` 时，06-03-02-03 第 14 节没有写运行时要不要再拒绝。本文只规定不把它们改写成 `MAPPED`。
+3. 06-03-02-03 第 14 节没有写加载后的资格防御。本文已在第 6 节第 5 步规定这三种资格使任务失败。上游原文没有改。同一任务中其他路径已经写出的观测是否一起撤销，仍见上一条。
 4. `observationId` 的生成算法、观测身份的字节编码和唯一索引仍未冻结。逻辑身份沿用 06-03-03-02。
 5. 业务对象标识由谁提供，仍然待确认。匹配不推断。
 6. 失败字段是否另存独立记录，仍然待存储设计决定。匹配不把它们写入 `ObservedAmount`。
@@ -399,7 +408,8 @@ CONFLICT，保留这一个 conflictDecisionId，proposedType 为空
 | `ACTIVE` 与 `RETIRED` 都按 `receivedAt` 左闭右开匹配 | 第 5、6 节 |
 | 两条映射、映射加冲突、两条冲突都任务失败 | 第 6、10.5、12 节 |
 | 同快照不覆盖，换快照才新建 | 第 7 节 |
-| 五种资格、六种语义、证据状态不并进执行状态 | 第 8 节 |
+| 五种资格、六种语义、证据状态不并进执行状态 | 第 8 节。只有 `ALLOWED_IF_CONTRACT_DEFINES` 可以是 `MAPPED` |
+| 非法资格不形成 `MAPPED` | 第 6、8、11、12 节。`NOT_UNTIL_CONFIRMED`、`DISALLOWED`、`CONFLICT_ONLY` 任务失败，不降成 `UNMAPPED` |
 | Pipeline 不依赖 Transform 实现 | 第 9 节，符合 ADR-0002 |
 | 不把 `DRAFT` 写成生产映射 | 第 1、7、13 节 |
 | 不设计解析器版本体系 | 第 13、14 节 |
@@ -407,3 +417,13 @@ CONFLICT，保留这一个 conflictDecisionId，proposedType 为空
 本文没有修改 06-03-01、06-03-02-01、06-03-02-02、06-03-02-03、06-03-03-01 和 06-03-03-02。
 
 本文没有 Java 实现，没有 DDL，没有新表，没有新模块。39 个标准金额类型和候选映射都没有被激活。
+
+## 16. 第一轮修订记录
+
+本轮只修订本文，不改六份上游文档。
+
+| 问题 | 解决情况 |
+| --- | --- |
+| 唯一映射命中后的资格默认分支 | 第 6 节第 5 步改为按五种 `mappingEligibility` 分别处理。只有 `ALLOWED_IF_CONTRACT_DEFINES` 是 `MAPPED`。`ALLOWED_AS_UNIDENTIFIED` 仍是 `UNMAPPED`，并保留资格和类型编码。`NOT_UNTIL_CONFIRMED`、`DISALLOWED`、`CONFLICT_ONLY` 是快照完整性异常，任务失败 |
+
+同步修订了第 3.4、8、10.5、11、12、14、15 节，避免其他章节仍写“不是未识别资格就是 `MAPPED`”。增加 T19、T20、T21。T14 保留。窗口算法、观测身份、模块依赖和 Pipeline 顺序没有改。没有新增状态码、领域对象、表或 Java 类。
