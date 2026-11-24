@@ -522,7 +522,7 @@ V2 的规则即使更完整，也不修改 O1 的 `proposedType`、`mappingStatu
 | T04 | 节点是空字符串 | `presence = EMPTY_STRING`。字面量是空字符串 |
 | T05 | 节点是数字文本 | `presence = NUMERIC_TEXT`。`rawText` 保持原文 |
 | T06 | 节点是不能当作十进制数字的字符串 | `presence = OTHER_TEXT`。不生成 `Money` |
-| T07 | 节点是对象或数组，路径没有重复标记 | `presence = NON_SCALAR`。不加总 |
+| T07 | 对象或数组出现在金额标量路径上 | `presence = NON_SCALAR`，`fieldCode = TYPE_MISMATCH`。不进入正常映射匹配，不形成 `ObservedAmount`。不加总，不选择数组中的第一个元素。其他成功字段继续 |
 | T08 | 数字 0 | `presence = NUMERIC_ZERO`。保留原始 token。它不是 T02 |
 | T09 | 无映射条目 | `UNMAPPED`。映射版本和 `proposedType` 为空 |
 | T10 | 快照命中冲突决定 | `CONFLICT`。不选择候选类型 |
@@ -668,3 +668,9 @@ V2 的规则即使更完整，也不修改 O1 的 `proposedType`、`mappingStatu
 2. 存储产品设计再决定处理尝试、失败字段记录和观测身份的物理保存方式。
 
 本文没有实现 Java、SQL、数据库表或生产功能。39 个标准金额类型和候选映射都没有被激活。
+
+## 19. 测试一致性修订
+
+第 12 节 T07 按 06-03-03-01 第 6、9 节补齐：金额标量路径上的对象或数组是 `presence = NON_SCALAR`、`fieldCode = TYPE_MISMATCH`。它不进入正常映射匹配，不形成 `ObservedAmount`，不加总，也不选择数组中的第一个元素。其他成功字段继续处理。
+
+核对第 5.3 节和第 10.3 节后，`TYPE_MISMATCH` 已经是同一边界：保留实际形态，不进入正常匹配，不写观测，其他成功字段继续。这两节本次没有改规则。没有新增状态码、对象、字段、表或 Java 类。
