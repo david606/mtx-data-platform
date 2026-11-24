@@ -9,7 +9,7 @@
 - [06-03-02-02 四平台字段映射](06-03-02-02%20MTX%20Data%20Platform%20V2%20四平台原始金额字段与标准金额类型映射设计.md)
 - [06-03-02-03 映射规则配置与版本](06-03-02-03%20MTX%20Data%20Platform%20V2%20金额映射规则配置模型与版本管理设计.md)
 
-架构依据是 [ADR-0002](../../../decisions/0002-v2-module-architecture.md)。
+架构依据是 [ADR-0002](../../../decisions/0002-v2-module-architecture.md)、[ADR-0003](../../../decisions/0003-unmapped-conflict-observation.md) 和 [ADR-0004](../../../decisions/0004-external-contract-version-resolution.md)。契约版本解析以已接受的 ADR-0004 为准。
 
 文中的标记含义：
 
@@ -36,7 +36,7 @@
 - `RawAmountValue.presence` 只有 `ABSENT`、`PRESENT_NULL`、`EMPTY_STRING`、`NUMERIC_ZERO`、`NUMERIC_TEXT`、`OTHER_TEXT`、`NON_SCALAR`。
 - `AmountSource.ingressMode` 只有 `CALLBACK` 和 `ACTIVE_QUERY`。订单号相同也不能把两种来源合成一次观测。
 - 06-03-01 的处理顺序是：接入、保存原文、映射、计算、检查、写入。映射端口生成 `RawAmountValue` 和 `ObservedAmount`。Pipeline 不依赖 Connector、Transform、Quality、Writer 的实现。
-- 06-03-02-03 规定任务固定 `snapshotId`。契约版本用 `contractVersionId` 识别。外部版本号“未提供”对应多个内部修订时，不能猜最新。重试沿用原快照。
+- 06-03-02-03 与 ADR-0004 规定任务先固定 `snapshotId`。契约版本在金额路径提取之前、且只在该快照内解析。恰好一个对应修订才确定 `contractVersionId`。零个或多个返回 `CONTRACT_VERSION_UNRESOLVED`，不写成 `UNMAPPED`。原任务重试沿用原快照。
 - 06-03-02-02 的映射全部是 `DRAFT`。今天不能产生 `mappingStatus = MAPPED`。`extras`、`poi_receive_detail`、`consumer_prepays` 不能在映射阶段被拆开后加总。
 
 trade-flow 怎样读取字段，只说明旧系统行为，不是平台官方契约，也不是 V2 提取规则。
@@ -150,9 +150,11 @@ trade-flow 怎样读取字段，只说明旧系统行为，不是平台官方契
 | 版本 | `contractVersionId` | `mappingId` 和 `mappingVersion` |
 | 今天的状态 | 路径清单尚未封存进契约版本 | 候选映射全部是 `DRAFT`，不能产生 `MAPPED` |
 
-历史报文重放时，使用任务上已经固定的 `snapshotId`。从该快照的契约条目取得 `contractVersionId`，再按该行记录的 `body_encoding` 校验正文，并使用 06-03-02-03 的路径分类。只有 `CONTRACT_PATHS_READY` 才读取路径清单。`CONTRACT_PATHS_EMPTY` 成功返回空字段结果。`CONTRACT_PATHS_UNDEFINED`、`CONTRACT_PATHS_CORRUPT` 和 `CONTRACT_PATH_INTEGRITY_FAILED` 都阻断。不按 `processedAt` 选择，也不因为后来发布了新契约就改读最新清单。
+金额路径提取开始前，先在任务已经固定的 `snapshotId` 内解析契约版本。接入端给出 `contractVersionId` 时直接采用该值，不再用外部版本号选择修订；该 ID 必须属于当前快照的契约条目，契约家族五段身份、`contractId` 和外部版本号必须与版本行一致，正文哈希必须通过。没有给出时，只在该快照内按契约家族和外部版本号查找。外部版本号为“未提供”时，只与同为“未提供”的修订比较。恰好一个候选才确定 `contractVersionId`。零个或多个都返回 `CONTRACT_VERSION_UNRESOLVED`，阻断，不产生字段结果，不产生 `ObservedAmount`，也不降级为 `UNMAPPED`。不猜测最新修订。原文仍保留。
 
-外部版本号缺失或多个“未提供”同时存在时，沿用 06-03-02-03：不能猜一个修订。这次提取阻断，原文仍保留。
+版本确定之后，按该行记录的 `body_encoding` 校验正文，并使用 06-03-02-03 的路径分类。只有 `CONTRACT_PATHS_READY` 才读取路径清单。`CONTRACT_PATHS_EMPTY` 成功返回空字段结果。`CONTRACT_PATHS_UNDEFINED`、`CONTRACT_PATHS_CORRUPT` 和 `CONTRACT_PATH_INTEGRITY_FAILED` 都阻断。家族身份、`contractId` 或外部版本号不一致时返回 `CONTRACT_IDENTITY_MISMATCH`。正文哈希不符时返回 `CONTRACT_VERSION_HASH_MISMATCH`，不使用已经读到的部分路径。这两种和 `CONTRACT_VERSION_UNRESOLVED` 都不进入路径提取。不按 `processedAt` 选择，也不因为后来发布了新契约就改读最新清单。
+
+临时读取或加载尚未完成、因而还没有得出零个、一个或多个修订时，允许原任务使用原 `snapshotId` 重试，不得把这次失败记成 `CONTRACT_VERSION_UNRESOLVED`，也不得切换最新快照。查找已经完成的零个或多个修订是确定性失败。原任务重复重试仍然失败，不更换 `snapshotId`。修正配置并发布新快照后，重新处理必须创建显式重放任务。显式重放是新任务，不复用原任务身份和幂等键，并遵守 ADR-0003，不覆盖已经写下的历史观测。观测身份仍是 `rawPayloadRef + snapshotId + contractVersionId + fieldPath`。
 
 已确认事实：06-03-01 写明重试幂等键尚未设计。本文只给出逻辑身份，不把它写成已经实现的存储，也不新增数据库表。
 
@@ -178,7 +180,10 @@ trade-flow 怎样读取字段，只说明旧系统行为，不是平台官方契
 | --- | --- | --- |
 | JSON 无法解析 | `PAYLOAD_MALFORMED`。不猜测每个字段 | 阻断 |
 | `rawPayloadRef` 取不回当时原文 | `PAYLOAD_REF_INVALID`。不改向最新报文 | 阻断 |
-| 快照里没有这个契约版本，或“未提供”对应多个修订 | `CONTRACT_VERSION_UNRESOLVED` | 阻断 |
+| 当前固定快照内对应修订为零个或多个，或给出的 `contractVersionId` 不在该快照契约条目中 | `CONTRACT_VERSION_UNRESOLVED`。无字段结果，无 `ObservedAmount`，不写成 `UNMAPPED` | 阻断 |
+| 契约家族身份、`contractId` 或外部版本号与版本行不一致 | `CONTRACT_IDENTITY_MISMATCH`。不进入路径提取 | 阻断 |
+| 正文哈希与封存值不一致 | `CONTRACT_VERSION_HASH_MISMATCH`。不使用部分路径，无字段结果，无 `ObservedAmount` | 阻断 |
+| 快照或契约版本读取尚未完成，没有得出候选数量 | 原任务用原 `snapshotId` 重试。不记成 `CONTRACT_VERSION_UNRESOLVED`，不切换最新快照 | 本次读取未完成，不进入提取 |
 | 声明路径不存在 | 该路径 `ABSENT`。这是正常形态，不是故障 | 继续 |
 | 节点类型不是金额标量，或与路径期望的标量不符 | 按实际节点记 `NON_SCALAR`、`OTHER_TEXT` 或其他真实形态，字段码 `TYPE_MISMATCH` | 继续 |
 | 同一声明路径落到多个节点，或对象内重复键 | 该路径 `PATH_NOT_UNIQUE`，不挑选 | 继续 |
@@ -215,9 +220,9 @@ trade-flow 怎样读取字段，只说明旧系统行为，不是平台官方契
 | --- | --- | --- |
 | `platform`、`sourceSystem`、`sourceInterface`、`sourceMessageType`、`sourceType` | 接入端按实际报文填写。消息类型可以是空字符串 | 必须等于 `contractVersionId` 所属契约家族的五段身份 |
 | `sourceContractId` | 接入端给出它认为的契约 | 必须等于该版本行上的 `contractId` |
-| `sourceContractVersion` | 接入端给出外部版本号。没有时写“未提供” | 必须等于该版本行上的外部版本号。它不负责在多个修订中做选择 |
-| `contractVersionId` | 接入端能够提供时直接给。否则只在该快照里恰好有一个匹配修订时由读取方填入 | 必须出现在 `snapshotId` 的契约条目中，并且正文哈希校验通过 |
-| `snapshotId` | 任务固定值，不是报文内容 | 不匹配最新快照。重放不替换 |
+| `sourceContractVersion` | 接入端给出外部版本号。没有时写“未提供” | 必须等于该版本行上的外部版本号。“未提供”只与同为“未提供”的修订匹配。它不负责在多个修订中做选择 |
+| `contractVersionId` | 接入端能够提供时优先采用。否则只在该快照里恰好有一个匹配修订时由读取方填入 | 必须出现在当前 `snapshotId` 的契约条目中，并且家族身份和正文哈希通过。零个或多个修订返回 `CONTRACT_VERSION_UNRESOLVED`，不降级为 `UNMAPPED` |
+| `snapshotId` | 任务先固定的值，不是报文内容 | 解析和原任务重试都不替换它。确定性解析失败不改读最新快照。新快照上的重新处理是显式重放任务 |
 | `ingressMode` | 接入端 | 只写入 `AmountSource`。契约没有这个属性，不用它选择路径 |
 | `rawPayloadRef` | 原始保存端口 | 必须取回当时原文。取回的平台和接入方式也要与请求一致 |
 | `receivedAt` | 接入端 | 只随来源保存，不选择契约版本或路径 |
@@ -231,7 +236,7 @@ trade-flow 怎样读取字段，只说明旧系统行为，不是平台官方契
 | `pathStatus` | `CONTRACT_PATHS_READY`、`CONTRACT_PATHS_EMPTY`、`CONTRACT_PATHS_UNDEFINED`、`CONTRACT_PATH_INTEGRITY_FAILED`、`CONTRACT_PATHS_CORRUPT` 之一。v2 正文哈希不一致时改为 `CONTRACT_VERSION_HASH_MISMATCH` |
 | `fieldResults` | `pathStatus` 为 `CONTRACT_PATHS_READY` 时才有字段。每项含具体 `fieldPath`、`presence`、`rawText`、`declaredUnitText`、`fieldCode`。`CONTRACT_PATHS_EMPTY` 时列表为空，`payloadCode` 仍为 `OK` |
 
-`fieldCode` 为 `OK`、`TYPE_MISMATCH`、`PATH_NOT_UNIQUE` 或 `RAW_TEXT_UNRETAINABLE`。`ABSENT`、`PRESENT_NULL`、`EMPTY_STRING` 和 `NUMERIC_ZERO` 的 `fieldCode` 仍是 `OK`，因为形态本身就是提取结果。`CONTRACT_PATHS_UNDEFINED`、`CONTRACT_PATH_INTEGRITY_FAILED`、`CONTRACT_PATHS_CORRUPT` 和 `CONTRACT_VERSION_HASH_MISMATCH` 都让 `payloadCode` 等于该码，并且 `fieldResults` 为空。读取报文使用契约上的 `payloadFormat`。当前只有 `JSON` 能进入已封存 v3。格式列与 v3 哈希不一致时，路径分类已经是 `CONTRACT_PATH_INTEGRITY_FAILED` 或 `CONTRACT_PATHS_CORRUPT`，提取不再另选一种解析器。
+`fieldCode` 为 `OK`、`TYPE_MISMATCH`、`PATH_NOT_UNIQUE` 或 `RAW_TEXT_UNRETAINABLE`。`ABSENT`、`PRESENT_NULL`、`EMPTY_STRING` 和 `NUMERIC_ZERO` 的 `fieldCode` 仍是 `OK`，因为形态本身就是提取结果。`CONTRACT_PATHS_UNDEFINED`、`CONTRACT_PATH_INTEGRITY_FAILED`、`CONTRACT_PATHS_CORRUPT` 和 `CONTRACT_VERSION_HASH_MISMATCH` 都让 `payloadCode` 等于该码，并且 `fieldResults` 为空。`CONTRACT_VERSION_UNRESOLVED` 和 `CONTRACT_IDENTITY_MISMATCH` 发生在路径分类之前，同样使 `payloadCode` 等于该码、`fieldResults` 为空，并且不产生 `ObservedAmount`。读取报文使用契约上的 `payloadFormat`。当前只有 `JSON` 能进入已封存 v3。格式列与 v3 哈希不一致时，路径分类已经是 `CONTRACT_PATH_INTEGRITY_FAILED` 或 `CONTRACT_PATHS_CORRUPT`，提取不再另选一种解析器。
 
 失败不使用一个空的 `rawText` 代替原因。阻断时 `fieldResults` 为空，`payloadCode` 说明原因。字段失败时，该字段和成功字段一起返回。
 
@@ -299,7 +304,10 @@ trade-flow 怎样读取字段，只说明旧系统行为，不是平台官方契
 | 富智云两组契约 | 订单摘录和团购契约各一份原文 | 两次提取，路径不串用 |
 | 相同数字 | 两个路径字面量相同 | 两条原始值 |
 | 缺失、null、空字符串、0 | 四个路径分别是这四种节点 | `ABSENT`、`PRESENT_NULL`、`EMPTY_STRING`、`NUMERIC_ZERO`。都不补成另一种 |
-| 历史重放 | 新契约版本已发布，任务仍带旧 `snapshotId` | 仍用旧路径清单。结果不追加第二份 |
+| 历史重放 | 新契约版本已发布，任务仍带旧 `snapshotId` | 仍用旧路径清单。结果不追加第二份。本行未执行 |
+| 零个或多个修订 | 当前固定快照内，明确版本号或“未提供”对应的修订不是恰好一个 | `CONTRACT_VERSION_UNRESOLVED`。无字段结果，无 `ObservedAmount`，不写成 `UNMAPPED`。本行未执行 |
+| 接入端给出有效版本 | `contractVersionId` 属于当前快照，身份、外部版本号和正文哈希通过 | 采用该 ID。不再用外部版本号选择修订。本行未执行 |
+| 确定性解析失败后的重试 | 查找已经完成且修订不是恰好一个，期间发布了新快照 | 原任务仍失败，不换 `snapshotId`。重新处理必须是显式重放任务，不覆盖历史观测。本行未执行 |
 | 部分失败 | 一个路径是对象，另一个路径是数字 | 对象为 `NON_SCALAR` 且 `TYPE_MISMATCH`。数字路径仍成功。整份报文不阻断 |
 | 坏 JSON | 原文不是 JSON | `PAYLOAD_MALFORMED`。原文还在，没有字段结果 |
 | 引用失效 | 保存引用取不回原文 | `PAYLOAD_REF_INVALID`。不读取最新报文 |
@@ -328,12 +336,12 @@ trade-flow 怎样读取字段，只说明旧系统行为，不是平台官方契
 | 七种 presence 不扩展 | 异常用字段码表达，不新增第八种形态 |
 | 提取成功不是语义确认 | 提取不写类型和 `mappingStatus`。当前匹配也不能写 `MAPPED` |
 | 回调和主动查询分开 | 输入强制带 `ingressMode`，相同数字也不合并 |
-| 快照和契约版本不可变 | 重放只读任务上的 `snapshotId` 和其中的 `contractVersionId` |
+| 快照和契约版本不可变 | 原任务重试只读已固定的 `snapshotId`。版本未确定时不产生观测。显式重放按 ADR-0003 另建观测 |
 | 非标量列表不加总 | 没有重复标记的数组保持 `NON_SCALAR` |
 
 第二轮审查发现 `payloadFormat` 还没有进入 06-03-02-03 的字段和 v3 哈希，路径结果也还合在 `CONTRACT_PATHS_ABSENT` 里。这两份文档一起修正。这是设计纠错。没有修改 06-03-01、06-03-02-01 和 06-03-02-02，也没有激活任何类型或映射。
 
-第三轮审查核对后，提取模型与 06-03-02-03 的当前定义一致，本文件不再改字段或状态码。`payloadFormat` 已经进入 `contract-version-v3` 正文。材料是否相同由 `contract-material-v1` 判断。`sourceRevision` 在正文哈希计算之前分配。路径状态仍是 `CONTRACT_PATHS_UNDEFINED`、`CONTRACT_PATHS_EMPTY`、`CONTRACT_PATH_INTEGRITY_FAILED`、`CONTRACT_PATHS_CORRUPT` 和 `CONTRACT_PATHS_READY`，与 06-03-02-03 相同。v2 历史哈希保持原定义。06-03-02-03 本轮另将 `ck_contract_payload_shape` 改为在写入时拒绝 v3 的空列和非法材料指纹。提取仍只读取已经通过该约束并完成路径分类的版本。
+第三轮审查核对后，提取字段和路径状态分类与当时的 06-03-02-03 一致。第四轮只按已接受的 ADR-0004 修订契约版本解析，不新增提取字段、执行状态或错误码。`payloadFormat` 已经进入 `contract-version-v3` 正文。材料是否相同由 `contract-material-v1` 判断。`sourceRevision` 在正文哈希计算之前分配。路径状态仍是 `CONTRACT_PATHS_UNDEFINED`、`CONTRACT_PATHS_EMPTY`、`CONTRACT_PATH_INTEGRITY_FAILED`、`CONTRACT_PATHS_CORRUPT` 和 `CONTRACT_PATHS_READY`，与 06-03-02-03 相同。v2 历史哈希保持原定义。06-03-02-03 本轮另将 `ck_contract_payload_shape` 改为在写入时拒绝 v3 的空列和非法材料指纹。提取仍只读取已经通过该约束并完成路径分类的版本。
 
 ## 15. 设计决策记录
 
@@ -358,3 +366,4 @@ trade-flow 怎样读取字段，只说明旧系统行为，不是平台官方契
 | 第一轮审查 | 设计纠错。路径清单改为 `contract-version-v3` 正文。区分报文读取、字面量保留和后续数值校验。提取结果不单独落库 |
 | 第二轮审查 | 设计纠错。`payloadFormat` 进入 v3 正文哈希。路径结果拆成五种分类。完整性失败阻断整次提取。修订号的分配顺序改由 06-03-02-03 的材料指纹决定 |
 | 第三轮审查 | 与 06-03-02-03 对齐，不改提取模型。`payloadFormat` 已纳入 `contract-version-v3` 正文。`contract-material-v1` 已用于材料相同性判断。`sourceRevision` 在正文哈希计算前分配。路径状态分类与 06-03-02-03 保持一致。v2 历史哈希保持原定义 |
+| 第四轮 | 按已接受的 ADR-0004 同步契约版本解析。零个或多个修订改为 `CONTRACT_VERSION_UNRESOLVED` 并阻断，不降级为 `UNMAPPED`。区分临时读取失败和确定性解析失败。新快照上的重新处理改为显式重放。本节新增测试未执行 |
