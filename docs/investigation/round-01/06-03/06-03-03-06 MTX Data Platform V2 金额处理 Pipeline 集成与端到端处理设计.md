@@ -22,7 +22,7 @@
 | 设计决定 | 本文为了把各阶段接成一条链路而作出的选择。它不改写已冻结文档 |
 | 待确认 | 上游没有给出执行状态机、物理索引或计算规则正文 |
 
-本文已完成第十轮补充整改，待重新进行完整架构审查。尚未正式冻结。本次整改不表示设计已经冻结。它不代表 Pipeline、任务状态或生产映射已经存在。当前标准类型 38 个是 `DRAFT`，`AMT.FEE.DELIVERY` 是 `RETIRED`，0 个是 `ACTIVE`。已确认生产映射数量是 0。文中的 `MAPPED`、标准化和计算都是规则，不是已经发生的生产处理。测试都没有执行。
+本文已完成第十一轮补充整改，待重新进行完整架构审查。尚未正式冻结。本次整改不表示设计已经冻结。它不代表 Pipeline、任务状态或生产映射已经存在。当前标准类型 38 个是 `DRAFT`，`AMT.FEE.DELIVERY` 是 `RETIRED`，0 个是 `ACTIVE`。已确认生产映射数量是 0。文中的 `MAPPED`、标准化和计算都是规则，不是已经发生的生产处理。测试都没有执行。
 
 ## 1. 目标、范围和非目标
 
@@ -1026,6 +1026,21 @@ TaskFinalizeResult finalizeTask(TaskFinalizeRequest request)
 | E2E-137 | 恢复过程中对同一身份和内容重复执行 | 仍只产生一条审计，后续为 `AUDIT_ALREADY_RECORDED` 或 `REJECT_AUDIT_ALREADY_RECORDED`。本行依赖未来存储设计 | 否。终态此前已经提交 | 未执行。依赖未来存储设计 |
 | E2E-138 | 恢复执行者再次写入失败 | 待处理责任不丢失，不能伪装成功。终态不变。本行依赖未来存储设计 | 否。终态此前已经提交 | 未执行。依赖未来存储设计 |
 | E2E-139 | 审计责任长时间未完成 | 必须能被监控发现，不能静默丢失。监控尚未实现。不改变四种已提交终态 | 否。终态此前已经提交 | 未执行。依赖未来存储设计 |
+| E2E-140 | 完整性审计顶层 `taskId` 缺失 | `finalizeTask` 返回 `FINALIZE_CONFLICT`。持久化结果为 `AUDIT_BASIS_MALFORMED`。不写审计，不补默认 `taskId`，不改变已提交终态。不是 `AUDIT_NOT_RECORDED` | 否。终态此前已经提交 | 未执行 |
+| E2E-141 | 顶层 `taskId` 存在，但不是当前逻辑任务 | `finalizeTask` 返回 `FINALIZE_CONFLICT`。持久化结果为 `AUDIT_BASIS_MALFORMED`。不写审计，不改写为当前任务，不改变终态 | 否。终态此前已经提交 | 未执行 |
+| E2E-142 | 顶层 `taskId` 属于当前逻辑任务，字段结果键的 `taskId` 相同且不为 `NULL` | 通过顶层和键的一致性校验。可以继续排序并形成审计身份。不新造业务身份 | 否。终态此前已经提交 | 未执行 |
+| E2E-143 | 字段结果键的 `taskId` 为 `NULL`，顶层 `taskId` 合法 | `AUDIT_BASIS_MALFORMED`。不把 `NULL` 改成顶层 `taskId`、`EMPTY` 或省略。不写审计，不改变终态 | 否。终态此前已经提交 | 未执行 |
+| E2E-144 | 字段结果键的 `contractVersionId` 为 `NULL` | `AUDIT_BASIS_MALFORMED`。不补默认契约版本，不写成 `EMPTY`。不写审计，不改变终态 | 否。终态此前已经提交 | 未执行 |
+| E2E-145 | 字段结果键的 `fieldPath` 为 `NULL` | `AUDIT_BASIS_MALFORMED`。不补默认路径，不写成 `EMPTY`。不写审计，不改变终态 | 否。终态此前已经提交 | 未执行 |
+| E2E-146 | 字段结果键的 `taskId` 为 `EMPTY`，顶层 `taskId` 是非空的当前任务 | 键上的空字符串不等于顶层 `taskId`，得到 `AUDIT_BASIS_MALFORMED`。不把 `EMPTY` 改成 `NULL` 或当前 `taskId`。不写审计，不改变终态 | 否。终态此前已经提交 | 未执行 |
+| E2E-147 | 字段结果键的 `contractVersionId` 为 `EMPTY`，其余键字段与顶层任务一致 | `EMPTY` 保留为空字符串，依据不是 `AUDIT_BASIS_MALFORMED`。它与 `NULL`、字段省略不是同一依据 | 否。终态此前已经提交 | 未执行 |
+| E2E-148 | 字段结果键的 `fieldPath` 为 `EMPTY`，其余键字段与顶层任务一致 | `EMPTY` 保留为空字符串，依据不是 `AUDIT_BASIS_MALFORMED`。它与 `NULL`、字段省略不是同一依据 | 否。终态此前已经提交 | 未执行 |
+| E2E-149 | 同一跨任务非法请求第一次提交 | `finalizeTask` 返回 `FINALIZE_CONFLICT`。持久化结果为 `AUDIT_BASIS_MALFORMED`。不产生审计记录，不改变终态。不是 `AUDIT_NOT_RECORDED` | 否。终态此前已经提交 | 未执行 |
+| E2E-150 | E2E-149 的同一请求原样再次提交 | 仍返回 `FINALIZE_CONFLICT` 和 `AUDIT_BASIS_MALFORMED`。不产生审计记录，不改变终态。不转成 `AUDIT_NOT_RECORDED` 或 `AUDIT_ALREADY_RECORDED` | 否。终态此前已经提交 | 未执行 |
+| E2E-151 | 同一字段结果键出现两次，状态相同，失败分类也相同 | 第 5 步合并成一项。身份和内容与只出现一次时相同。可以形成审计。不因此新增第二条 | 否。终态此前已经提交 | 未执行 |
+| E2E-152 | 同一字段结果键出现两次，状态不同 | `AUDIT_BASIS_MALFORMED`。不合并，不写审计，不改变终态。原样再提交仍是这个结果 | 否。终态此前已经提交 | 未执行 |
+| E2E-153 | 同一字段结果键出现两次，状态相同，失败分类不同 | `AUDIT_BASIS_MALFORMED`。不合并，不写审计，不改变终态。不把它当成相同内容的重复项 | 否。终态此前已经提交 | 未执行 |
+| E2E-154 | 同一次请求同时包含跨任务键，以及同任务键的重复项 | 先做跨任务一致性校验，得到 `AUDIT_BASIS_MALFORMED`。不去重，也不改写跨任务键。不写审计，不改变终态 | 否。终态此前已经提交 | 未执行 |
 | E2E-092 | 终态已经是 `PARTIAL_SUCCESS` 后提交另一个 `blockIdentity` | `recordTaskBlock` 返回 `LATE_BLOCK_RECORDED`，新增一条迟到审计。不参与终态。终态保持 `PARTIAL_SUCCESS` | 否 | 未执行 |
 | E2E-093 | 终态已经是 `ALL_FIELDS_FAILED` 后提交另一个 `blockIdentity` | `recordTaskBlock` 返回 `LATE_BLOCK_RECORDED`，新增一条迟到审计。不参与终态。终态保持 `ALL_FIELDS_FAILED` | 否 | 未执行 |
 | E2E-077 | 两个 Worker 在终态提交前提交相同终态和相同依据 | 一个 `finalizeTask` 返回 `FINALIZED`，另一个返回 `ALREADY_FINALIZED`。不新增完整性审计 | 否 | 未执行 |
@@ -1052,6 +1067,7 @@ TaskFinalizeResult finalizeTask(TaskFinalizeRequest request)
 7. 外部版本不能唯一对应修订时，06-03-02-03 与 06-03-03-01、06-03-03-03 仍不一致。这是未完成的跨文档决策。当前没有统一契约，该场景不能进入实现验收。
 8. 审计身份与字段结果键的跨任务一致性已经在逻辑设计中定义。审计记录的物理存储结构尚未设计。字段结果键仍必须按 `taskId`、`contractVersionId`、`fieldPath` 三个独立字段保存。失败不写入 `ObservedAmount`。拒绝审计、迟到审计和完整性审计不参与终态。
 9. 审计待处理责任的持久化和恢复机制尚未选型。恢复扫描、监控、告警和最终核对尚未实现。跨 Worker 幂等约束尚未通过真实并发测试。审计记录与任务终态之间的物理事务一致性尚未证明。这些都不是当前已经具备的能力。
+10. 第十一轮只为已有的 `AUDIT_BASIS_MALFORMED` 边界补了未执行的测试设计。没有新增返回码，也没有执行这些测试。跨进程恢复仍未选型。
 
 ## 15. 架构决策
 
@@ -1137,5 +1153,9 @@ TaskFinalizeResult finalizeTask(TaskFinalizeRequest request)
 ## 28. 第十轮补充修订
 
 第十轮补充整改完成，待重新进行完整架构审查。本轮规定字段结果键的 `taskId` 必须与审计顶层 `taskId` 一致，收紧 `AUDIT_BASIS_MALFORMED`，并把即时重试和跨进程恢复分开。跨进程恢复尚未选型，也没有实现。没有改 R7、R8、R9、R11、R12 和 R13。没有正式冻结。没有设计 DDL。E2E 测试都没有执行。
+
+## 29. 第十一轮补充修订
+
+第十一轮补充整改完成，待重新进行完整架构审查。本轮只补充完整性审计边界条件的测试设计，没有改返回码、审计身份、恢复责任或 R7、R8、R9、R11、R12、R13。没有正式冻结。没有设计 DDL。E2E 测试都没有执行。
 
 本文没有修改 06-03-01、06-03-02-01、06-03-02-02、06-03-02-03、06-03-03-01、06-03-03-02、06-03-03-03、06-03-03-04 和 06-03-03-05。没有 Java 实现，没有 DDL，没有新表，没有新模块。
