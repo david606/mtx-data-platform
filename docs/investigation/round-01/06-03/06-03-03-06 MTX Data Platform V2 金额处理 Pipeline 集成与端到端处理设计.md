@@ -22,7 +22,7 @@
 | 设计决定 | 本文为了把各阶段接成一条链路而作出的选择。它不改写已冻结文档 |
 | 待确认 | 上游没有给出执行状态机、物理索引或计算规则正文 |
 
-本文已完成第五轮补充整改，待第六轮架构审查。尚未正式冻结。本次整改不表示设计已经冻结。它不代表 Pipeline、任务状态或生产映射已经存在。当前标准类型 38 个是 `DRAFT`，`AMT.FEE.DELIVERY` 是 `RETIRED`，0 个是 `ACTIVE`。已确认生产映射数量是 0。文中的 `MAPPED`、标准化和计算都是规则，不是已经发生的生产处理。测试都没有执行。
+本文已完成第五轮补充整改（二），待重新进行完整架构审查。尚未正式冻结。本次整改不表示设计已经冻结。它不代表 Pipeline、任务状态或生产映射已经存在。当前标准类型 38 个是 `DRAFT`，`AMT.FEE.DELIVERY` 是 `RETIRED`，0 个是 `ACTIVE`。已确认生产映射数量是 0。文中的 `MAPPED`、标准化和计算都是规则，不是已经发生的生产处理。测试都没有执行。
 
 ## 1. 目标、范围和非目标
 
@@ -80,23 +80,23 @@
         |     不用来源金额或报文引用拼通用键
         |
         v
-Worker 只提出候选 snapshotId、契约版本和 parserVersion
-两个规则版本不在这一步确定
+Worker 只提出候选 snapshotId 和 parserVersion
+候选契约版本不在这一步生效
         |
         v
-createOrGet 权威执行上下文，见第 4.1 节
-持久化成功后才提取
-        |
-        +-- CREATED：使用本次固定的上下文
-        |
-        +-- ALREADY_EXISTS：采用胜出方的完整上下文
-              候选快照或解析器不同也不阻断
-        |
-        +-- 不可变任务输入不一致，或已保存上下文违反契约：完整性异常
+第一阶段：固定胜出快照和 parserVersion，见第 4.1 节
+失败方读取胜出快照，不用自己的候选覆盖
         |
         v
-整份 payloadCode 不是 OK 时按既有提取规则处理
-外部版本不能唯一对应修订时见第 2 节，尚未统一
+第二阶段：只在已持久化的胜出快照内解析契约版本并校验哈希
+两个 Worker 最终采用同一权威版本
+        |
+        +-- 解析失败或哈希不符：不提取
+        |
+        +-- 外部版本不能唯一对应修订：见第 2 节，尚未统一，不提取
+        |
+        v
+契约版本可靠固定之后才提取
         |
         +-- 整份 payloadCode 不是 OK：任务阻断，观测条数为 0
         |
@@ -163,22 +163,22 @@ createOrGet 权威执行上下文，见第 4.1 节
 
 1. 用第 4.2 节的稳定接入事件身份确定逻辑任务，并读取该任务已经保存的不可变输入。
 2. 校验权威原文引用。取不回则阻断，不提取。
-3. Worker 可以提出候选 `snapshotId`、`contractVersionId` 和 `parserVersion`。这些候选不是任务身份。
-4. 在胜出的快照内确定契约版本并校验 `contractBodySha256`。版本不在该快照内则不能采用该候选。外部版本不能唯一对应修订时，见第 2 节，尚未形成统一契约。
-5. 调用第 4.1 节，把权威上下文可靠持久化。
-6. 持久化成功之后才开始金额字段提取。
+3. Worker 可以提出候选 `snapshotId` 和 `parserVersion`。候选 `contractVersionId` 只是提议，不是权威版本。这些候选都不是任务身份。
+4. 第一阶段先决定胜出的 `snapshotId` 和 `parserVersion`，并持久化。见第 4.1 节。
+5. 第二阶段只读取这份已持久化的胜出快照，在其中解析 `contractVersionId` 并校验 `contractBodySha256`。不得在胜出快照确定前解析权威契约版本。
+6. 契约版本和哈希都可靠持久化之后，才开始金额字段提取。
 
 契约版本的规则：
 
-- 接入已经给出 `contractVersionId` 时，该版本必须出现在本次胜出快照的契约条目中，并且哈希校验通过。不允许绕过快照去读全局最新契约版本。
-- 接入没有给出 `contractVersionId` 时，只在胜出快照内解析。06-03-03-01 规定，只有恰好一个匹配修订时才填入。不得用全局最新版本猜测。这一句与 06-03-02-03 的差异仍按第 2 节保留，不在这里结案。
-- 重试读取已经持久化的上下文。可以有新的 `taskAttemptId`。不因为契约配置后来变化而重选快照、契约版本或 `parserVersion`。
+- 接入已经给出 `contractVersionId` 时，该版本必须出现在已经胜出的快照的契约条目中，并且哈希校验通过。不允许绕过快照去读全局最新契约版本。
+- 接入没有给出 `contractVersionId` 时，只在已经胜出的快照内解析。06-03-03-01 规定，只有恰好一个匹配修订时才填入。不得用全局最新版本猜测。这一句与 06-03-02-03 的差异仍按第 2 节保留，不在这里结案。
+- 重试读取已经持久化的两阶段结果。可以有新的 `taskAttemptId`。不因为契约配置后来变化而重选快照、契约版本或 `parserVersion`。
 
-`parserVersion`、`contractVersionId`、`snapshotId`、`normalizationRuleVersion` 和 `conversionRuleVersion` 是五个不同概念。前三个在执行上下文固定时确定。后两个仍在标准化阶段确定，见第 4.1 节和第 8 节。契约正文哈希沿用已有的 `contractBodySha256`，不另起 `contractVersionHash`。解析器的注册、发布、保留、兼容和历史重放仍是 Java 实现前的设计事项。本文不设计那套子系统。
+`parserVersion`、`contractVersionId`、`snapshotId`、`normalizationRuleVersion` 和 `conversionRuleVersion` 是五个不同概念。前三个都进入执行上下文，但快照和解析器在第一阶段固定，契约版本在第二阶段固定。后两个仍在标准化阶段确定，见第 8 节。契约正文哈希沿用已有的 `contractBodySha256`，不另起 `contractVersionHash`。解析器的注册、发布、保留、兼容和历史重放仍是 Java 实现前的设计事项。本文不设计那套子系统。
 
-### 4.1 执行上下文的原子固定
+### 4.1 执行上下文的两阶段固定
 
-已确定的逻辑契约：金额提取开始前，必须先持久化该任务的一份权威执行上下文。一个 `taskId` 只有一份。多个 Worker 并发时用创建或读取收敛，不靠 JVM 本地锁。
+已确定的逻辑契约：一个 `taskId` 只有一份执行上下文。Worker 的候选参数不是这份上下文。金额提取开始前，快照和契约版本都必须已经可靠持久化。多个 Worker 不靠 JVM 本地锁。
 
 不可变任务输入由任务创建或接入阶段确定。相同逻辑任务的重试只读取这一份，不重新确定：
 
@@ -191,27 +191,59 @@ createOrGet 权威执行上下文，见第 4.1 节
 
 `sourceSystem` 属于 06-03-03-01 已有的来源身份。`receivedAt` 仍是窗口判断的业务时间。
 
-Worker 候选执行参数不是任务身份，不能用来区分重复任务。它们只在首次把执行上下文固定成功时写入权威上下文：
+Worker 候选执行参数不是任务身份，不能用来区分重复任务：
 
-- `snapshotId`
-- `contractVersionId`
-- `contractBodySha256`
-- `parserVersion`
+- 候选 `snapshotId`
+- 候选 `parserVersion`
+- 候选 `contractVersionId` 和候选 `contractBodySha256`
 
-`normalizationRuleVersion` 和 `conversionRuleVersion` 不在这一步确定，也不写入这份上下文来代替版本固定记录。它们的时机保持原设计：标准化全部门禁通过之后才确定；`createOrGet` 把版本固定记录持久化成功之后，才允许写出 `NormalizedAmount`；重试读取该记录，不改读最新规则。`versionFixKey` 不变，仍是观测身份、`taskId` 和标准化阶段。`normalizationIdentity` 仍沿用 06-03-03-04，不含 `taskId`。
+`normalizationRuleVersion` 和 `conversionRuleVersion` 不进入这两阶段，也不代替版本固定记录。它们仍在标准化全部门禁通过之后确定。版本固定记录的 `createOrGet` 成功之后，才允许写出 `NormalizedAmount`。重试读取该记录。`versionFixKey` 不变，仍是观测身份、`taskId` 和标准化阶段。`normalizationIdentity` 仍沿用 06-03-03-04，不含 `taskId`。
+
+上下文只有三种逻辑状态。状态名是本文的契约，不是已经存在的枚举：
+
+| 状态 | 已持久化内容 | 允许的下一步 |
+| --- | --- | --- |
+| 未固定 | 没有本任务的上下文 | 只允许第一阶段 |
+| 快照已固定 | 胜出 `snapshotId` 和 `parserVersion`。契约版本仍空 | 只允许第二阶段。禁止提取、匹配和观测 |
+| 契约已固定 | 上一行加上该快照内的 `contractVersionId` 和 `contractBodySha256` | 才允许提取 |
+
+不能从“未固定”直接进入“契约已固定”。第一阶段成功之后不能改写胜出快照。第二阶段成功之后不能改写契约版本。两个阶段都没有成功之前，不得提取。
+
+第一阶段的幂等身份是 `taskId` 加上不可变任务输入。写入内容只包括胜出 `snapshotId` 和 `parserVersion`。
 
 ```text
-ExecutionContextFixResult createOrGet(ExecutionContextFixRequest request)
+SnapshotFixResult createOrGetSnapshot(SnapshotFixRequest request)
 ```
 
-这不是已经存在的 Java 接口。返回只有 `CREATED` 和 `ALREADY_EXISTS`。两种都带已持久化的完整上下文。
+这不是已经存在的 Java 接口。返回 `CREATED` 或 `ALREADY_EXISTS`，都带已持久化的快照和解析器。
 
-| 返回 | 行为 |
+| 角色 | 操作 |
 | --- | --- |
-| `CREATED` | 首个成功创建者固定权威上下文 |
-| `ALREADY_EXISTS` | 读取胜出方已经持久化的完整上下文，并采用其中的快照、契约版本和 `parserVersion` |
+| 胜出方 | 返回 `CREATED`。自己的候选 `snapshotId` 和 `parserVersion` 成为权威值 |
+| 失败方 | 返回 `ALREADY_EXISTS`。丢弃自己的候选快照和解析器，读取胜出记录。不因为候选不同而阻断，也不改选最新快照 |
 
-并发失败方不得因为自己的候选 `snapshotId`、`parserVersion` 或规则版本与胜出方不同而阻断，也不得改选最新版本。只有不可变任务输入对不上，或者已持久化的上下文本身违反契约，才是完整性异常，并且不覆盖已有上下文。响应丢失后的重试读取已持久化上下文。上下文没有持久化成功之前，不得提取金额。物理表、锁和唯一约束留待存储设计。
+不可变任务输入对不上，或已保存的第一阶段记录本身违反契约，才是完整性异常，并且不覆盖。响应丢失时再次调用，读取已持久化记录。物理表、锁和唯一约束留待存储设计。
+
+第二阶段的幂等身份是 `taskId` 加上第一阶段已经持久化的 `snapshotId`。它不能使用失败方自己的候选快照。写入内容只包括 `contractVersionId` 和 `contractBodySha256`。
+
+```text
+ContractFixResult createOrGetContract(ContractFixRequest request)
+```
+
+这也不是已经存在的 Java 接口。调用前必须已经读到“快照已固定”。胜出方和失败方都只在这份胜出快照内解析，然后调用它。
+
+| 情况 | 行为 |
+| --- | --- |
+| 首次解析成功且哈希相符 | `CREATED`。该版本成为权威契约版本 |
+| 已有权威版本 | `ALREADY_EXISTS`。调用方采用已保存的 `contractVersionId` 和 `contractBodySha256`，不得用自己的候选覆盖 |
+| 两个 Worker 并发解析 | 只有一套权威版本。后完成的一方读取这套版本 |
+| 版本不在胜出快照内，或哈希不符 | 不写入权威契约版本，不进入提取 |
+| 外部版本不能唯一对应修订 | 按第 2 节保持未决策。不提取，也不把任一方写成统一结果 |
+| 写入成功但响应丢失 | 重试得到 `ALREADY_EXISTS`，读取原记录，不重新选择最新契约 |
+
+失败方在第一阶段之后必须重新解析，不能把第一阶段之前按自己候选快照算出的契约版本直接提交。若重新解析的结果与已保存权威版本不同，仍采用已保存版本，只要该版本确实属于胜出快照且哈希相符。已保存版本不在该快照内或哈希不符时，是已持久化上下文违反契约，属于完整性异常，不用失败方的候选去覆盖。
+
+两个规则版本的固定仍在第 8 节，不并入这两阶段。
 
 ### 4.2 稳定任务幂等身份
 
@@ -559,7 +591,8 @@ normalizationIdentity =
 
 ```java
 AmountExtractionResult extract(AmountExtractionRequest request);
-ExecutionContextFixResult createOrGet(ExecutionContextFixRequest request);
+SnapshotFixResult createOrGetSnapshot(SnapshotFixRequest request);
+ContractFixResult createOrGetContract(ContractFixRequest request);
 ObservedAmount findByIdentity(ObservationIdentity identity);
 AmountMappingMatchResult match(AmountMappingMatchRequest request);
 PersistObservationResult persistObservation(ObservedAmount observation);
@@ -569,7 +602,7 @@ AmountCalculationResult calculate(AmountCalculationRequest request);
 AmountProcessingResult execute(AmountProcessingCommand command);
 ```
 
-上面两个 `createOrGet` 是不同端口。执行上下文用 `ExecutionContextFixRequest`。版本固定用 `NormalizationVersionFixRequest`。它们不互相代替。
+上面的 `createOrGetSnapshot` 和 `createOrGetContract` 是第 4.1 节的两个阶段。`createOrGet` 只处理版本固定记录，不代替这两个阶段。
 
 `findByIdentity` 是观测仓储端口。它按冻结身份查询。不存在时由 Pipeline 继续后面的匹配，不在这个端口里匹配或标准化。已存在时返回原观测和其中已经保存的匹配结果。
 
@@ -654,39 +687,59 @@ RETRY_WAITING -> RUNNING
 
 字段处理结果的逻辑键仍是 `taskId + contractVersionId + fieldPath`。它不含 `taskAttemptId`，也不是 `mappingStatus`。持久化返回 `CREATED` 或 `ALREADY_EXISTS`，并返回权威结果。同一字段再次执行时返回这份结果。已完成字段不能被后续尝试静默覆盖。内容不一致是完整性异常。`UNMAPPED` 和 `CONFLICT` 仍是合法业务结果，不是字段失败。字段成功也不表示语义已确认或可以计算。
 
-任务级完整性异常必须先写成该 `taskId` 上可恢复的阻断记录。终态判定读取这份记录，不靠 Worker 内存。
+任务级完整性异常必须先通过第 11.1 节写成该 `taskId` 上可恢复的阻断记录。内存中的异常不是终态依据。
 
-终态判定是一次整体操作，读取权威字段集合、全部字段的最终持久化结果、任务级阻断记录、Pipeline 步骤的最终状态，以及 `CONTRACT_PATHS_EMPTY` 这类合法空结果。不能用某个 Worker 的局部缓存或过期读取自行推导。判定和终态持久化在逻辑上是一个原子动作。数据库事务、CAS、锁和唯一约束留待存储设计。
+终态判定读取权威字段集合、全部字段的最终持久化结果、已经持久化的任务级阻断记录、Pipeline 步骤的最终状态，以及 `CONTRACT_PATHS_EMPTY` 这类合法空结果。不能用某个 Worker 的局部缓存或过期读取自行推导。数据库事务、CAS、锁和唯一约束留待存储设计。逻辑协议见第 11.1 节。
+
+### 11.1 任务级并发协调
+
+已确定的逻辑契约：阻断记录写入和 `finalizeTask` 使用同一个任务级协调边界，身份是 `taskId`。字段结果仍按自己的字段键持久化，不能在这个边界之外改任务终态。旧 Worker、旧 `taskAttemptId` 和过期缓存都不能绕过这个边界。
 
 ```text
+TaskBlockResult recordTaskBlock(TaskBlockRequest request)
 TaskFinalizeResult finalizeTask(TaskFinalizeRequest request)
 ```
 
-这不是已经存在的 Java 接口。
+这两个签名都不是已经存在的 Java 接口。
+
+`recordTaskBlock` 返回 `BLOCK_RECORDED` 或 `ALREADY_BLOCKED`。只有返回成功之后，阻断记录才成为可读取依据。调用方不得把尚未返回成功的内存异常交给 `finalizeTask`。
+
+协调边界内的可见性规则：
+
+1. 一次终态判定只读取判定开始时已经持久化的阻断记录、字段结果和步骤状态。
+2. 判定开始前已经持久化的阻断记录，必须进入这次依据。结果只能是 `FAILED`。
+3. 判定已经提交之后才到达的阻断记录，是迟到阻断。它不改写已经合法提交的终态。
+4. 阻断记录与最后一个字段完成并发时，字段结果可以先落盘，但终态只有一个。只要阻断记录在判定开始前已经持久化，唯一结果是 `FAILED`，不是 `SUCCESS`、`PARTIAL_SUCCESS` 或 `ALL_FIELDS_FAILED`。
+5. 阻断记录与一次 `SUCCESS` 提交并发时，同样以判定开始时是否已经有持久化阻断记录为准。有，则不能提交 `SUCCESS`。没有，则按字段结果判定；其后的迟到阻断不把已提交的 `SUCCESS` 改成 `FAILED`。
+
+同一边界把阻断写入和终态提交排成先后关系。阻断先被边界接受时，随后的终态判定必须看见它。终态先提交时，随后的阻断是迟到阻断。没有“阻断已经接受、终态却看不见”的第三种结果。内存中的异常在 `recordTaskBlock` 成功前不进入这个顺序。
+
+`finalizeTask` 不接受调用方自选的终态作为权威值。协调方根据当前持久化依据计算终态，再与请求中的终态和依据对照。
 
 | 返回 | 行为 |
 | --- | --- |
-| `FINALIZED` | 首次按完整依据收敛成功，返回权威终态和判定依据 |
-| `ALREADY_FINALIZED` | 已经收敛。返回同一份权威终态和判定依据 |
+| `FINALIZED` | 请求依据与当前持久化依据一致，且尚无终态。提交计算得到的终态和依据 |
+| `ALREADY_FINALIZED` | 已经提交。返回同一份权威终态和依据。相同请求不另写一条 |
+| 依据不一致 | 完整性异常。不提交，也不因为请求先到就采纳 |
 
-并发 Worker 不能各自留下互相冲突的终态。`SUCCESS` 不能覆盖 `FAILED`。`FAILED` 不能覆盖已经合法完成的 `SUCCESS`。判定依据不一致时是完整性异常，不能只因为某一方先写入就采纳。集合未齐时不调用成功收敛，任务保持 `RUNNING`。
+`SUCCESS` 不能覆盖 `FAILED`。`FAILED` 不能覆盖已经合法完成的 `SUCCESS`。`PARTIAL_SUCCESS` 和 `ALL_FIELDS_FAILED` 同样不能互相覆盖，也不能覆盖另外两类已提交终态。集合未齐且没有已持久化阻断时，不提交成功类终态，任务保持 `RUNNING`。
 
-四类终态仍然互斥：
+四类终态仍然互斥，一次判定只命中一行：
 
 | 状态 | 条件 |
 | --- | --- |
-| `SUCCESS` | 权威集合中的字段都已结束，没有字段级失败，也没有任务级阻断。空集合按 `CONTRACT_PATHS_EMPTY` 处理，仍是这个状态，并另记空路径 |
-| `PARTIAL_SUCCESS` | 至少一个字段成功，同时至少一个字段级失败，没有任务级阻断 |
-| `ALL_FIELDS_FAILED` | 权威集合非空，全部字段都是字段级失败，没有字段成功，也没有任务级阻断 |
-| `FAILED` | 存在已持久化的任务级阻断。不因已有字段成功或最后一个字段刚刚完成而降级 |
+| `FAILED` | 判定开始时已有持久化的任务级阻断。优先于下面三行 |
+| `SUCCESS` | 没有上述阻断，权威集合中的字段都已结束，且没有字段级失败。空集合按 `CONTRACT_PATHS_EMPTY` 处理，仍是这个状态，并另记空路径 |
+| `PARTIAL_SUCCESS` | 没有上述阻断，至少一个字段成功，同时至少一个字段级失败 |
+| `ALL_FIELDS_FAILED` | 没有上述阻断，权威集合非空，全部字段都是字段级失败，没有字段成功 |
 
-空字段集合不是 `ALL_FIELDS_FAILED`。全部字段为合法 `UNMAPPED` 或 `CONFLICT` 也不是。新的 `taskAttemptId` 参加判定时，使用该 `taskId` 上已经持久化的字段结果，包括旧尝试已经完成的字段。
+空字段集合不是 `ALL_FIELDS_FAILED`。全部字段为合法 `UNMAPPED` 或 `CONFLICT` 也不是。新的 `taskAttemptId` 参加判定时，使用该 `taskId` 上已经持久化的字段结果，包括旧尝试已经完成的字段。旧尝试拿过期终态再次提交时，按依据不一致处理，不覆盖已提交终态。
 
 这四层不能合并：字段处理状态、Pipeline 步骤状态、任务状态、`mappingStatus`。
 
-重试从 `RETRY_WAITING` 进入新的 `taskAttemptId`，仍用第 4 节已持久化的上下文，以及第 8 节已经固定的规则版本。已完成字段按字段结果键恢复。全部依据齐了以后才 `finalizeTask`。
+重试从 `RETRY_WAITING` 进入新的 `taskAttemptId`，仍用第 4 节已持久化的上下文，以及第 8 节已经固定的规则版本。已完成字段按字段结果键恢复。全部依据齐了以后才进入第 11.1 节。
 
-待确认：哪些字段级失败允许自动进入 `RETRY_WAITING`，以及取消之后执行记录如何保留。取消和失败都不覆盖已写出的领域结果。字段结果和终态收敛的物理实现待存储设计。来源没有稳定事件身份时的重复投递，待来源契约确认。
+待确认：哪些字段级失败允许自动进入 `RETRY_WAITING`，以及取消之后执行记录如何保留。取消和失败都不覆盖已写出的领域结果。协调边界的物理实现待存储设计。来源没有稳定事件身份时的重复投递，待来源契约确认。
 
 ## 12. 追踪
 
@@ -760,9 +813,9 @@ TaskFinalizeResult finalizeTask(TaskFinalizeRequest request)
 | E2E-056 | 版本固定记录尚未可靠保存 | 不写出 `NormalizedAmount` | 否 | 未执行 |
 | E2E-057 | 已固定版本不可用 | 阻断。不自动切换到其他版本 | 是 | 未执行 |
 | E2E-058 | 不转换时并发固定版本 | `conversionRuleVersion` 保持逻辑空值 NULL。不伪造版本号 | 否 | 未执行 |
-| E2E-059 | 两个 Worker 用不同 `snapshotId` 并发固定同一任务上下文 | 一个 `CREATED`，另一个 `ALREADY_EXISTS` 并采用胜出快照。候选不同不阻断 | 否 | 未执行 |
-| E2E-060 | 两个 Worker 用不同 `parserVersion` 并发固定同一任务上下文 | 失败方采用胜出方的 `parserVersion`。不因此阻断 | 否 | 未执行 |
-| E2E-061 | 执行上下文写入成功但响应丢失 | 重试得到 `ALREADY_EXISTS`，读取原上下文。上下文未持久化前不提取 | 否 | 未执行 |
+| E2E-059 | 两个 Worker 用不同 `snapshotId` 并发进入第一阶段 | 一个 `CREATED`，另一个 `ALREADY_EXISTS` 并读取胜出快照。失败方不用自己的候选快照解析契约 | 否 | 未执行 |
+| E2E-060 | 两个 Worker 用不同 `parserVersion` 并发进入第一阶段 | 失败方采用胜出方的 `parserVersion`。不因此阻断 | 否 | 未执行 |
+| E2E-061 | 第一阶段或第二阶段写入成功但响应丢失 | 重试读取原记录。契约版本未固定前不提取 | 否 | 未执行 |
 | E2E-062 | 同一 `taskId` 的不可变任务输入不一致 | 完整性异常。不覆盖已有上下文 | 是 | 未执行 |
 | E2E-063 | 同一稳定接入事件再次投递，但 `rawPayloadRef` 不同 | 回到原 `taskId`。不新建逻辑任务 | 否 | 未执行。来源已声明稳定事件身份时才适用 |
 | E2E-064 | 同一稳定接入事件再次投递，但看到的 `receivedAt` 不同 | 回到原 `taskId`。权威业务时间仍是第一次接受时保存的 `receivedAt` | 否 | 未执行。来源已声明稳定事件身份时才适用 |
@@ -776,14 +829,21 @@ TaskFinalizeResult finalizeTask(TaskFinalizeRequest request)
 | E2E-072 | 一个尝试完成部分字段后重试 | 新 `taskAttemptId` 恢复已有字段结果。终态仍等权威集合齐 | 否 | 未执行 |
 | E2E-073 | 旧尝试与新尝试同时完成字段 | 字段结果按任务键收敛。已完成字段不被后一次静默覆盖 | 否 | 未执行 |
 | E2E-074 | Worker 凭过期字段状态请求 `SUCCESS` | 不采纳。终态只按完整持久化依据判定 | 否 | 未执行 |
-| E2E-075 | `SUCCESS` 与 `FAILED` 并发 | 不互相覆盖。依据不一致则是完整性异常 | 是 | 未执行 |
-| E2E-076 | 任务级阻断与最后一个字段完成同时发生 | 读取已持久化的阻断记录。不把任务降成 `SUCCESS` | 是 | 未执行 |
+| E2E-075 | 任务阻断与 `SUCCESS` 提交并发，或 `SUCCESS` 与 `FAILED` 同时提交 | 以协调边界中先被接受的持久化依据计算唯一终态。不互相覆盖，也不采用未核对依据的先写入者 | 是 | 未执行 |
+| E2E-076 | 任务级阻断与最后一个字段完成并发 | 阻断先被协调边界接受时，唯一终态是 `FAILED`。字段结果可以保留，但不降成 `SUCCESS` | 是 | 未执行 |
 | E2E-077 | 两个 Worker 提交相同终态和相同依据 | `FINALIZED` 之后是 `ALREADY_FINALIZED`，返回同一终态 | 否 | 未执行 |
-| E2E-078 | 两个 Worker 提交不同终态或不同依据 | 完整性异常。不采用先写入者 | 是 | 未执行 |
+| E2E-078 | 两个 Worker 提交不同终态或不同依据 | 与当前持久化依据不一致的请求不提交。不采用先写入者 | 是 | 未执行 |
 | E2E-079 | 空字段集合、全部合法 `UNMAPPED`、全部合法 `CONFLICT` | 都不是 `ALL_FIELDS_FAILED`。空集合仍是带空路径标记的 `SUCCESS` | 否 | 未执行 |
 | E2E-080 | 两个任务为同一观测固定不同规则版本 | 各自的 `versionFixKey` 保留自己的版本。形成两个标准化逻辑身份 | 否 | 未执行。版本号尚未分配 |
 | E2E-081 | 两个任务算出相同的 `normalizationIdentity` | 标准化结果一个 `CREATED`，另一个 `ALREADY_EXISTS`。不因 `taskId` 不同再插一条 | 否 | 未执行 |
 | E2E-082 | 相同标准化逻辑身份，结果内容不一致 | 完整性异常。不覆盖已有结果 | 否 | 未执行 |
+| E2E-083 | 两个 Worker 在胜出快照确定后并发解析契约版本 | 只在已持久化的胜出快照内解析。最终一套 `contractVersionId` 和 `contractBodySha256`。失败方不覆盖 | 否 | 未执行 |
+| E2E-084 | 契约版本解析失败 | 停留在快照已固定。不提取，不生成观测 | 是 | 未执行 |
+| E2E-085 | 契约正文与 `contractBodySha256` 不一致 | 不写入权威契约版本。不提取 | 是 | 未执行 |
+| E2E-086 | 第二阶段写入成功但响应丢失 | 重试 `createOrGetContract` 得到已有记录。不重选最新契约，不提取两次权威版本 | 否 | 未执行 |
+| E2E-087 | 阻断记录先于终态收敛持久化 | `finalizeTask` 看见该记录。终态为 `FAILED` | 是 | 未执行 |
+| E2E-088 | 终态已经提交后，旧 Worker 再提交阻断 | 迟到阻断不改写已提交终态。返回 `ALREADY_FINALIZED` | 否 | 未执行 |
+| E2E-089 | 旧 `taskAttemptId` 提交过期终态 | 依据与当前持久化结果不一致。不覆盖已提交终态 | 是 | 未执行 |
 
 进入实现之后还需要单元测试、端口装配测试、幂等并发测试和故障重试测试。那些测试现在也不存在。
 
@@ -858,5 +918,9 @@ TaskFinalizeResult finalizeTask(TaskFinalizeRequest request)
 ## 22. 第五轮补充修订
 
 第五轮补充整改完成，待第六轮架构审查。本轮把不可变任务输入和 Worker 候选执行参数分开，重复投递改为按稳定接入事件身份回到原任务，终态改为按完整依据原子收敛。没有改变 `versionFixKey` 和 `normalizationIdentity`。没有正式冻结。没有设计 DDL。E2E 测试都没有执行。
+
+## 23. 第五轮补充修订（二）
+
+第五轮补充整改（二）完成，待重新进行完整架构审查。本轮把执行上下文改成先固定胜出快照、再在该快照内固定契约版本，并把任务阻断记录与终态提交放进同一个任务级协调边界。没有改 R8 的三类身份和 `replayRequestId`，没有改 R9 的 `normalizationIdentity`。外部版本不能唯一对应修订仍待决策。没有正式冻结。没有设计 DDL。E2E 测试都没有执行。
 
 本文没有修改 06-03-01、06-03-02-01、06-03-02-02、06-03-02-03、06-03-03-01、06-03-03-02、06-03-03-03、06-03-03-04 和 06-03-03-05。没有 Java 实现，没有 DDL，没有新表，没有新模块。
