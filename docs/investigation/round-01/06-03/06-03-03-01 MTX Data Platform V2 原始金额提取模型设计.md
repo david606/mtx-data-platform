@@ -85,14 +85,24 @@ trade-flow 怎样读取字段，只说明旧系统行为，不是平台官方契
 | `sourceContractVersion` | 放在 `AmountSource` | 外部版本号。没有时写“未提供” |
 | `contractVersionId` | 提取请求必须带 | 06-03-02-03 的内部版本。只靠“未提供”不能定位 |
 | `fieldPath` | 放在 `RawAmountValue` | 具体路径就是字段身份。不再另造 `fieldIdentifier` 或第二套 `payloadPath` |
-| `payloadFormat` | 放在契约版本上，整份报文一个值 | 当前调查到的金额报文按 JSON 理解。一种契约版本只有一种格式，不必每个字段复制 |
+| `payloadFormat` | 放在契约版本上，并进入 `contract-version-v3` 正文哈希 | 整份报文一个值。当前枚举只有 `JSON`。一种契约版本只有一种格式，不必每个字段复制 |
 | `extractionStrategy` | 不增加 | 现在只有“按声明路径读取节点”。没有第二种读法，单独的策略名没有职责 |
 
-设计决定：金额路径清单是契约版本正文的一部分，不单独建提取档案。06-03-02-03 用 `contract-version-v3` 把路径列表算进正文哈希，并用 `source_contract_amount_path` 保存这些路径。`contract-version-v2` 的哈希定义不含路径，也不能被重算成 v3。
+设计决定：金额路径清单和 `payloadFormat` 都是契约版本正文的一部分，不单独建提取档案。06-03-02-03 用 `contract-version-v3` 把 `payloadFormat` 和路径列表算进正文哈希，并用 `source_contract_amount_path` 保存这些路径。`payload_format` 列与哈希同时生效。只增加列、不参加哈希，不能作为本设计。`contract-version-v2` 的哈希定义不含这两项，也不能被重算成 v3。
 
-路径可以是普通路径，例如 `total`；也可以明确写出重复标记，例如 `extras[].reduce_fee`。没有写重复标记的数组或对象，整段按一个节点读取，不自动拆开。
+路径可以是普通路径，例如 `total`；也可以明确写出重复标记，例如 `extras[].reduce_fee`。契约路径的语法、排序、数量和重复规则以 06-03-02-03 为准。具体下标不写入契约。没有写重复标记的数组或对象，整段按一个节点读取，不自动拆开。
 
-已确认事实：06-03-02-02 的调查路径仍是候选，不是已封存清单，也不是生效映射。只有 `body_encoding = contract-version-v3` 且校验通过的版本才能提供提取路径。v2 版本没有路径清单，提取不能把“没有路径字段”当成“路径为空”。
+已确认事实：06-03-02-02 的调查路径仍是候选，不是已封存清单，也不是生效映射。提取只接受已封存且分类为 `CONTRACT_PATHS_READY` 的 v3。五种路径结果分别是：
+
+| 分类 | 提取怎么处理 |
+| --- | --- |
+| `CONTRACT_PATHS_UNDEFINED` | v2 没有路径定义。阻断。不补成空列表 |
+| `CONTRACT_PATHS_EMPTY` | v3 声明了空路径列表，完整性通过。`payloadCode` 为 `OK`，字段结果为空 |
+| `CONTRACT_PATH_INTEGRITY_FAILED` | v3 路径完整性校验失败。阻断。不使用部分路径 |
+| `CONTRACT_PATHS_CORRUPT` | v3 路径数据缺失或损坏。阻断。不使用已读到的子集 |
+| `CONTRACT_PATHS_READY` | v3 路径正常。按完整清单提取 |
+
+`CONTRACT_PATHS_ABSENT` 不再使用。它以前同时表示 v2 和 v3 校验失败，盖住了上面这些不同结果。
 
 ## 6. 原始值识别模型
 
@@ -130,7 +140,7 @@ trade-flow 怎样读取字段，只说明旧系统行为，不是平台官方契
 
 ## 8. 规则版本管理
 
-设计决定：提取不另建一套规则版本和发布批次。路径清单属于 `contract-version-v3` 正文。契约材料或路径变化都会改变正文哈希，从而得到新的 `sourceRevision` 和 `contractVersionId`。旧的 v2 哈希保持原定义。
+设计决定：提取不另建一套规则版本和发布批次。路径清单和 `payloadFormat` 属于 `contract-version-v3` 正文。契约材料、格式或路径变化都会改变 `materialSha256`，从而得到新的 `sourceRevision` 和 `contractVersionId`，然后再计算包含该修订号的 `bodySha256`。旧的 v2 哈希保持原定义。提取只读取已经保存的版本，不在提取时重新分配修订号。分配顺序以 06-03-02-03 为准。
 
 提取规则和 `AmountMapping` 的区别：
 
@@ -140,7 +150,7 @@ trade-flow 怎样读取字段，只说明旧系统行为，不是平台官方契
 | 版本 | `contractVersionId` | `mappingId` 和 `mappingVersion` |
 | 今天的状态 | 路径清单尚未封存进契约版本 | 候选映射全部是 `DRAFT`，不能产生 `MAPPED` |
 
-历史报文重放时，使用任务上已经固定的 `snapshotId`。从该快照的契约条目取得 `contractVersionId`，再按该行记录的 `body_encoding` 校验正文。只有 v3 才读取路径清单。不按 `processedAt` 选择，也不因为后来发布了新契约就改读最新清单。
+历史报文重放时，使用任务上已经固定的 `snapshotId`。从该快照的契约条目取得 `contractVersionId`，再按该行记录的 `body_encoding` 校验正文，并使用 06-03-02-03 的路径分类。只有 `CONTRACT_PATHS_READY` 才读取路径清单。`CONTRACT_PATHS_EMPTY` 成功返回空字段结果。`CONTRACT_PATHS_UNDEFINED`、`CONTRACT_PATHS_CORRUPT` 和 `CONTRACT_PATH_INTEGRITY_FAILED` 都阻断。不按 `processedAt` 选择，也不因为后来发布了新契约就改读最新清单。
 
 外部版本号缺失或多个“未提供”同时存在时，沿用 06-03-02-03：不能猜一个修订。这次提取阻断，原文仍保留。
 
@@ -175,6 +185,13 @@ trade-flow 怎样读取字段，只说明旧系统行为，不是平台官方契
 | 字符串不是十进制数字 | `OTHER_TEXT`。不截断出其中的数字 | 继续 |
 | 原始字面量无法完整保存 | 字段码 `RAW_TEXT_UNRETAINABLE`。不能保存截断后的数字冒充原文 | 继续 |
 | 数组或对象出现在标量路径上 | `NON_SCALAR` | 继续 |
+| v2 契约没有路径定义 | `CONTRACT_PATHS_UNDEFINED` | 阻断 |
+| v3 声明空路径列表，且数量、排序、内容和哈希都通过 | `CONTRACT_PATHS_EMPTY`。`payloadCode` 为 `OK`，字段结果为空 | 不阻断 |
+| v3 路径重复、语法不合，或规范重算与库存哈希不一致 | `CONTRACT_PATH_INTEGRITY_FAILED` | 阻断 |
+| v3 路径行数与 `path_count` 不一致，路径读不到，或 v3 缺少合法 `payloadFormat` | `CONTRACT_PATHS_CORRUPT` | 阻断 |
+| v3 路径数量、内容、排序和哈希都通过，且至少一条路径 | `CONTRACT_PATHS_READY`。随后按清单产生字段结果 | 不阻断 |
+
+完整性失败和路径数据损坏都停止这一次提取。不允许丢掉坏路径后再用剩下的路径继续。空列表是一份完整声明，字段结果为空；它和 v2 的“没有路径定义”是两种分类。
 
 这五类问题不能混在一个字段码里：
 
@@ -210,10 +227,11 @@ trade-flow 怎样读取字段，只说明旧系统行为，不是平台官方契
 | 字段 | 含义 |
 | --- | --- |
 | `snapshotId`、`contractVersionId`、`contractBodySha256` | 证明用的是哪一版封存清单 |
-| `payloadCode` | `OK` 或阻断码 |
-| `fieldResults` | `payloadCode` 为 `OK` 时才有。每项含具体 `fieldPath`、`presence`、`rawText`、`declaredUnitText`、`fieldCode` |
+| `payloadCode` | `OK`，或下面的阻断码 |
+| `pathStatus` | `CONTRACT_PATHS_READY`、`CONTRACT_PATHS_EMPTY`、`CONTRACT_PATHS_UNDEFINED`、`CONTRACT_PATH_INTEGRITY_FAILED`、`CONTRACT_PATHS_CORRUPT` 之一。v2 正文哈希不一致时改为 `CONTRACT_VERSION_HASH_MISMATCH` |
+| `fieldResults` | `pathStatus` 为 `CONTRACT_PATHS_READY` 时才有字段。每项含具体 `fieldPath`、`presence`、`rawText`、`declaredUnitText`、`fieldCode`。`CONTRACT_PATHS_EMPTY` 时列表为空，`payloadCode` 仍为 `OK` |
 
-`fieldCode` 为 `OK`、`TYPE_MISMATCH`、`PATH_NOT_UNIQUE` 或 `RAW_TEXT_UNRETAINABLE`。`ABSENT`、`PRESENT_NULL`、`EMPTY_STRING` 和 `NUMERIC_ZERO` 的 `fieldCode` 仍是 `OK`，因为形态本身就是提取结果。阻断码增加 `CONTRACT_PATHS_ABSENT`：契约行是 v2，或者 v3 校验失败。它和 v3 的空路径列表不同。空列表的 `payloadCode` 是 `OK`，`fieldResults` 为空。
+`fieldCode` 为 `OK`、`TYPE_MISMATCH`、`PATH_NOT_UNIQUE` 或 `RAW_TEXT_UNRETAINABLE`。`ABSENT`、`PRESENT_NULL`、`EMPTY_STRING` 和 `NUMERIC_ZERO` 的 `fieldCode` 仍是 `OK`，因为形态本身就是提取结果。`CONTRACT_PATHS_UNDEFINED`、`CONTRACT_PATH_INTEGRITY_FAILED`、`CONTRACT_PATHS_CORRUPT` 和 `CONTRACT_VERSION_HASH_MISMATCH` 都让 `payloadCode` 等于该码，并且 `fieldResults` 为空。读取报文使用契约上的 `payloadFormat`。当前只有 `JSON` 能进入已封存 v3。格式列与 v3 哈希不一致时，路径分类已经是 `CONTRACT_PATH_INTEGRITY_FAILED` 或 `CONTRACT_PATHS_CORRUPT`，提取不再另选一种解析器。
 
 失败不使用一个空的 `rawText` 代替原因。阻断时 `fieldResults` 为空，`payloadCode` 说明原因。字段失败时，该字段和成功字段一起返回。
 
@@ -287,10 +305,15 @@ trade-flow 怎样读取字段，只说明旧系统行为，不是平台官方契
 | 引用失效 | 保存引用取不回原文 | `PAYLOAD_REF_INVALID`。不读取最新报文 |
 | 非标量容器 | 声明路径就是 `extras` | 一条 `NON_SCALAR`。不自动求和 |
 | 重复标记 | `extras[].reduce_fee` 有两个元素，第二个没有该字段 | 下标 0 按实际形态记录。下标 1 为 `ABSENT`，不是 0 |
+| v2 契约 | 已封存 v2，哈希与 v2 定义一致，没有路径行 | `CONTRACT_PATHS_UNDEFINED`。没有字段结果 |
+| v3 空列表 | `path_count = 0`，正文哈希为 `60f96aca692a7dff254fd1efd4362afe4d0f2e28529cdeea566cfd60c5523959` | `payloadCode = OK`，`pathStatus = CONTRACT_PATHS_EMPTY`，字段结果为空 |
+| 路径损坏 | v3 的 `path_count` 为 2，路径表只剩 1 行 | `CONTRACT_PATHS_CORRUPT`。不提取剩下的那一条 |
+| 路径完整性失败 | 库存正文哈希等于未排序向量 `013692f475dcb5b3188d4f5477dc1476b756cd893f59e7c5b7adb65b0fcf3bbd` | `CONTRACT_PATH_INTEGRITY_FAILED`。不改用排序后的部分结果继续 |
+| 格式不同 | 同一路径清单，`payloadFormat` 从 `JSON` 改为另一个字符串 | 材料指纹变化，成为新的契约版本。未登记的字符串不能封存，也不能用来提取 |
 
 ## 14. 风险与待确认事项
 
-- 金额路径已经纳入 `contract-version-v3` 的正文哈希。调查表里的路径仍未封存，不能直接拿来提取。v2 契约行不能被解释成空路径清单。
+- `payloadFormat` 和金额路径都已经纳入 `contract-version-v3` 的正文哈希。调查表里的路径仍未封存，不能直接拿来提取。v2 契约行的分类是 `CONTRACT_PATHS_UNDEFINED`，v3 的空列表是 `CONTRACT_PATHS_EMPTY`。完整性失败时不降级使用部分路径。
 - 报文保存产品未定。`rawPayloadRef` 怎样取回原文仍待确认。
 - 06-03-01 的观测重试幂等键仍未设计。本文只定义逻辑身份。提取不落库，观测唯一约束也还没有存储实现。
 - JSON 解析器是否暴露重复键，待实现时确认。不能在设计里假设平台没有重复键。
@@ -308,14 +331,16 @@ trade-flow 怎样读取字段，只说明旧系统行为，不是平台官方契
 | 快照和契约版本不可变 | 重放只读任务上的 `snapshotId` 和其中的 `contractVersionId` |
 | 非标量列表不加总 | 没有重复标记的数组保持 `NON_SCALAR` |
 
-本轮发现 06-03-03-01 与 06-03-02-03 的哈希范围不一致，所以同时修正了 06-03-02-03。这是设计纠错。没有修改 06-03-01、06-03-02-01 和 06-03-02-02，也没有激活任何类型或映射。
+第二轮审查发现 `payloadFormat` 还没有进入 06-03-02-03 的字段和 v3 哈希，路径结果也还合在 `CONTRACT_PATHS_ABSENT` 里。这两份文档一起修正。这是设计纠错。没有修改 06-03-01、06-03-02-01 和 06-03-02-02，也没有激活任何类型或映射。
 
 ## 15. 设计决策记录
 
 | 决策 | 理由 | 没有采用的做法 |
 | --- | --- | --- |
 | 提取放在映射端口前半段 | 06-03-01 已规定 Pipeline 先保存再映射。再加一个外部步骤会改变已冻结时序 | 新建提取模块或让 Pipeline 调用 Transform |
-| 路径清单进入 `contract-version-v3` | 独立提取档案会让快照、发布和 Worker 多读一份对象。当前路径就是契约声明的字段，放进正文哈希就能被旧快照固定 | 保持 v2 哈希却口头要求它包含路径。那会让同一次编码得到另一个哈希 |
+| 路径清单和 `payloadFormat` 进入 `contract-version-v3` | 独立提取档案会让快照、发布和 Worker 多读一份对象。格式和路径都是契约声明，放进正文哈希后才能被旧快照固定 | 只在表上增加 `payload_format`，哈希仍沿用没有该字段的字节 |
+| 五种路径分类分开 | v2 没有定义、v3 空列表、完整性失败、数据损坏和正常清单对提取的含义不同 | 用一个 `CONTRACT_PATHS_ABSENT` 同时表示 v2 和任何 v3 失败 |
+| 修订号先于正文哈希 | `sourceRevision` 在 v3 正文里。材料指纹不含它，所以可以先决定修订号，再计算正文哈希 | 用包含修订号的正文哈希判断要不要新建修订 |
 | 只提取声明路径 | 全文字段扫描会把未声明数字当成金额，属于语义猜测 | 发现数字就生成一条金额 |
 | 重复标记才展开 | `extras[].reduce_fee` 是已经声明的子路径；`extras` 本身被冻结文档禁止拆开加总 | 看到数组就展开并求和 |
 | 字段失败不阻断兄弟字段 | 一个坏节点不应丢掉同报文里已经能识别的原始值 | 任一字段异常就丢弃整份原文 |
@@ -329,3 +354,4 @@ trade-flow 怎样读取字段，只说明旧系统行为，不是平台官方契
 | --- | --- |
 | 初稿 | 建立原始金额提取的职责、路径读取和与映射端口的边界 |
 | 第一轮审查 | 设计纠错。路径清单改为 `contract-version-v3` 正文。区分报文读取、字面量保留和后续数值校验。提取结果不单独落库 |
+| 第二轮审查 | 设计纠错。`payloadFormat` 进入 v3 正文哈希。路径结果拆成五种分类。完整性失败阻断整次提取。修订号的分配顺序改由 06-03-02-03 的材料指纹决定 |

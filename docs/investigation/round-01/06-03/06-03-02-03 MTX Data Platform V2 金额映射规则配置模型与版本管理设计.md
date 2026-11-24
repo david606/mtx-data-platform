@@ -78,18 +78,26 @@
 
 来源种类写错时新建家族。旧 `contractId` 不改，也没有接口把 `CODE_INVESTIGATION` 改成 `OFFICIAL_DOCUMENT`。
 
-契约版本分成四个标识，不再用外部版本号充当内部唯一键：
+契约版本使用下面这些标识。外部版本号不再充当内部唯一键。
 
 | 标识 | 含义 |
 | --- | --- |
 | `contractVersion` | 外部版本号。官方没有版本号时写“未提供”。它可以在同一家族里重复 |
-| `contractVersionId` | 内部分配的唯一版本 ID。主键 |
-| `sourceRevision` | 该家族内的材料修订号，从 1 递增。只在内容指纹不同时增加 |
-| `bodySha256` | 材料正文指纹。同一家族里相同指纹不新建版本 |
+| `contractVersionId` | 内部分配的唯一版本 ID。主键。分配时正文哈希还没有计算 |
+| `sourceRevision` | 该家族内的材料修订号，从 1 递增。只在材料指纹不同时增加 |
+| `materialSha256` | 材料指纹。编码名是 `contract-material-v1`。不含 `contractVersionId` 和 `sourceRevision` |
+| `bodySha256` | 封存正文指纹。v3 使用 `contract-version-v3`，包含已经分配的版本 ID、修订号、`payloadFormat` 和路径列表 |
+| `payloadFormat` | 整份报文的格式。v3 正文中的一个字段。当前接受的值只有 `JSON` |
 
-因此，官方没有版本号、后来材料变了、路径清单变了，或者封存前补充了会改变正文的证据，都会得到新的 `sourceRevision` 和新的 `contractVersionId`。指纹相同则返回已有版本，避免空修订。已经进入快照的版本行封存，不能改正文，也不能追加会改变指纹的证据或路径。
+这些标识属于契约版本对象 `SourceContractVersion`。同一对象还保存证据状态、语义状态、来源引用和生效区间。建议表是 `source_contract_version`。v3 行的 `payload_format` 保存 `payloadFormat`，并与正文哈希使用同一个值。
 
-这是设计纠错，不是另一套提取产品。金额路径清单属于契约版本正文。`contract-version-v2` 的字段顺序不包含路径，这个定义保持不变。新的契约版本用 `contract-version-v3` 把路径清单算进正文哈希。没有单独的提取档案，也不为提取再做一次发布。
+因此，官方没有版本号、后来材料变了、`payloadFormat` 变了、路径清单变了，或者封存前补充了会改变正文的证据，都会得到新的 `sourceRevision` 和新的 `contractVersionId`。材料指纹相同则返回已有版本，避免空修订。
+
+创建时先计算 `materialSha256`，用它判断材料是不是新的，再分配 `sourceRevision`，最后计算 `bodySha256`。`sourceRevision` 进入正文哈希，不进入材料指纹。这样先有修订号，再有正文哈希；判断是否新建版本时也不读取修订号。完整顺序见第 14 节。
+
+已经进入快照的版本行封存。封存后不能改正文，不能修改 `payloadFormat`，也不能追加会改变指纹的证据或路径。
+
+这是设计纠错，不是另一套提取产品。金额路径清单和 `payloadFormat` 都属于契约版本正文。`contract-version-v2` 的字段顺序不包含路径，也不包含 `payloadFormat`，这个定义保持不变。新的契约版本用 `contract-version-v3` 把这两项算进正文哈希。没有单独的提取档案，也不为提取再做一次发布。
 
 没有消息类型时写入空字符串。报文若只带“未提供”，而该家族在这份快照里有多个内部修订，Worker 不猜测，结果是 `UNMAPPED`。接入记录必须尽量带上 `contractVersionId`。
 
@@ -283,7 +291,10 @@ CREATE TABLE source_contract_version (
   source_reference VARCHAR(512) NOT NULL,
   contract_effective_from DATETIME(3) NULL,
   contract_effective_to DATETIME(3) NULL,
+  payload_format VARCHAR(32) NULL,
+  path_count INT NULL,
   publication_state VARCHAR(16) NOT NULL DEFAULT 'DRAFT',
+  material_sha256 CHAR(64) NULL,
   body_sha256 CHAR(64) NOT NULL,
   body_encoding VARCHAR(32) NOT NULL,
   row_version INT NOT NULL DEFAULT 1,
@@ -292,13 +303,23 @@ CREATE TABLE source_contract_version (
   PRIMARY KEY (contract_version_id),
   UNIQUE KEY uk_contract_source_revision (contract_id, source_revision),
   UNIQUE KEY uk_contract_body_sha256 (contract_id, body_sha256),
+  UNIQUE KEY uk_contract_material_sha256 (contract_id, material_sha256),
   KEY idx_contract_version_state (contract_id, publication_state),
   CONSTRAINT ck_contract_revision_positive CHECK (source_revision > 0),
   CONSTRAINT ck_contract_version_state CHECK (publication_state IN ('DRAFT', 'SEALED')),
   CONSTRAINT ck_contract_version_evidence CHECK (evidence_status IN (
     'E1-A', 'E1-B', 'E2', 'E3', 'E4', 'E5', 'E6', 'NONE')),
   CONSTRAINT ck_contract_body_encoding CHECK (body_encoding IN (
-    'contract-version-v2', 'contract-version-v3'))
+    'contract-version-v2', 'contract-version-v3')),
+  CONSTRAINT ck_contract_payload_shape CHECK (
+    (body_encoding = 'contract-version-v2'
+      AND payload_format IS NULL
+      AND path_count IS NULL
+      AND material_sha256 IS NULL)
+    OR (body_encoding = 'contract-version-v3'
+      AND payload_format IN ('JSON')
+      AND path_count >= 0
+      AND CHAR_LENGTH(material_sha256) = 64))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
 
 CREATE TABLE source_contract_amount_path (
@@ -573,6 +594,10 @@ CREATE TABLE amount_mapping_idempotency_request (
 
 创建冲突决定、审核冲突决定和发布冲突决定的聚合类型是 `CONFLICT_DECISION`，事件名分别是 `CREATE_CONFLICT_DECISION`、`REVIEW_CONFLICT` 和 `PUBLISH_CONFLICT`。
 
+`payload_format`、`path_count` 和 `material_sha256` 是契约版本上的建议列。v2 行这三列都为空。v3 行的 `payload_format` 只能是 `JSON`，`path_count` 大于或等于 0，`material_sha256` 是 64 位十六进制。MySQL 唯一索引把 NULL 看成互不相同，所以多条 v2 行可以同时让 `material_sha256` 为空。同一 `contract_id` 下，一个 v3 材料指纹只对应一行。
+
+`source_contract_amount_path` 保存 v3 路径列表的可查询投影。行数必须等于 `path_count`。这张表没有自己的哈希列。路径字节进入 `contract-version-v3` 和 `contract-material-v1`。版本封存后，不能再插入、修改或删除该版本的路径行。v2 版本一旦出现路径行，第 14 节把它定为 `CONTRACT_PATHS_CORRUPT`。
+
 ## 13. 管理 API 设计
 
 查询用 GET，变更用 POST。下面的角色只是调用约定，不是已经实现的账号、权限或审批系统。服务当前能够强制的是：变更请求必须带 `operatorId`，审核人必须是另一名操作者。`actorRole` 写入审计，供以后的账号系统对照。
@@ -639,9 +664,9 @@ CREATE TABLE amount_mapping_idempotency_request (
 
 校验接口和全部 GET 不计算 `requestHash`。编辑草稿仍不能修改字段路径、目标类型和契约版本，所以这些字段不在 `EDIT_DRAFT` 的请求体里。
 
-上表是 `request-v2` 的字段顺序，第一项版本名是字符串 `request-v2`。新的变更请求使用 `request-v3`：版本名改为 `request-v3`，其余事件的字段顺序与上表相同。只有 `CREATE_CONTRACT_VERSION` 在 `evidences` 之后再增加 `amountPaths`。路径按 UTF-8 字节升序，元素是字符串，不是嵌套哈希。重复路径返回 `REQUEST_INVALID`。空列表表示这份契约版本声明没有金额路径，和省略该字段不同。
+上表是 `request-v2` 的字段顺序，第一项版本名是字符串 `request-v2`。新的变更请求使用 `request-v3`：版本名改为 `request-v3`，其余事件的字段顺序与上表相同。只有 `CREATE_CONTRACT_VERSION` 在两个生效时间之后、`evidences` 之前增加字符串 `payloadFormat`，并在 `evidences` 之后增加 `amountPaths`。路径按 UTF-8 字节升序，元素是字符串，不是嵌套哈希。重复路径返回 `AMOUNT_PATH_DUPLICATE`。路径不符合第 14 节的语法时返回 `AMOUNT_PATH_INVALID`。`payloadFormat` 缺省、为空或为 null 时返回 `REQUEST_INVALID`。值不是 `JSON` 时返回 `PAYLOAD_FORMAT_UNKNOWN`。空路径列表表示这份契约版本声明没有金额路径。省略 `amountPaths` 返回 `REQUEST_INVALID`，调用方必须显式传列表。
 
-因此，第六轮记录的 `request-v2` 测试向量仍然只属于 `request-v2`。不能把那些字节改名为 `request-v3` 后继续使用原来的哈希。
+因此，第六轮记录的 `request-v2` 测试向量仍然只属于 `request-v2`。不能把那些字节改名为 `request-v3` 后继续使用原来的哈希。第七轮的 `request-v3` 示例还没有 `payloadFormat`，那组字节和哈希本轮废止，不再作为当前请求哈希。
 
 ### 创建契约
 
@@ -675,15 +700,15 @@ CREATE TABLE amount_mapping_idempotency_request (
 
 `POST /api/admin/source-contracts/{contractId}/versions`
 
-请求：`requestId`、`operatorId`、`actorRole`、`contractVersion`、`evidenceStatus`、`semanticStatus`、`sourceReference`、`contractEffectiveFrom`、`contractEffectiveTo`、`evidences`、`amountPaths`。官方没有版本号时，`contractVersion` 传“未提供”。`amountPaths` 必须显式给出，可以是空列表。
+请求：`requestId`、`operatorId`、`actorRole`、`contractVersion`、`evidenceStatus`、`semanticStatus`、`sourceReference`、`contractEffectiveFrom`、`contractEffectiveTo`、`payloadFormat`、`evidences`、`amountPaths`。官方没有版本号时，`contractVersion` 传“未提供”。`payloadFormat` 当前只能是 `JSON`。`amountPaths` 必须显式给出，可以是空列表。
 
-成功：`contractVersionId`、`sourceRevision`、`bodySha256`、`result`。`result` 为 `CREATED` 或 `EXISTING`。指纹已存在时返回原版本，不新增修订。
+成功：`contractVersionId`、`sourceRevision`、`bodySha256`、`materialSha256`、`result`。`result` 为 `CREATED` 或 `EXISTING`。材料指纹已存在时返回原版本，不新增修订。
 
-错误：`OPERATOR_REQUIRED`、`CONTRACT_NOT_FOUND`、`VERSION_SEALED`、`EVIDENCE_INVALID`。
+错误：`OPERATOR_REQUIRED`、`CONTRACT_NOT_FOUND`、`VERSION_SEALED`、`EVIDENCE_INVALID`、`PAYLOAD_FORMAT_UNKNOWN`、`AMOUNT_PATH_DUPLICATE`、`AMOUNT_PATH_INVALID`。
 
 事件：`CREATE_CONTRACT_VERSION`。聚合是 `SOURCE_CONTRACT`，聚合 ID 是 `contractId`。
 
-事务：按 `contract-version-v3` 计算正文哈希，`body_encoding` 写成这个名字。哈希已存在则只写审计并返回原 ID。否则插入新版本、证据、金额路径和审计。已封存版本不在这个接口改正文或路径。新请求不再创建 `contract-version-v2`。
+事务：按第 14 节先计算 `contract-material-v1`。锁定契约家族行之后，材料指纹已存在则只写审计，并返回原来的 `contractVersionId`、`sourceRevision` 和 `bodySha256`。否则分配下一号 `sourceRevision` 和新的 `contractVersionId`，写入证据并取得 `evidenceId`，再按 `contract-version-v3` 计算 `bodySha256`。然后插入版本行、金额路径和审计。`body_encoding` 写成 `contract-version-v3`，`path_count` 写成路径个数。已封存版本不在这个接口改正文、`payloadFormat` 或路径。新请求不再创建 `contract-version-v2`。
 
 ### 创建映射草稿
 
@@ -966,7 +991,11 @@ CREATE TABLE amount_mapping_idempotency_request (
 
 契约版本 `contract-version-v2` 的值顺序保持不变：版本名、`contractVersionId`、`contractId`、`contractVersion`、`sourceRevision`、`evidenceStatus`、`semanticStatus`、`sourceReference`、`contractEffectiveFrom`、`contractEffectiveTo`、证据列表。每条证据的顺序是 `evidenceId`、`evidenceStatus`、`sourceReference`、`quotedNote`。封存状态、行版本、时间戳和 `body_encoding` 都不进入正文哈希。
 
-`contract-version-v3` 在这份顺序之后追加金额路径列表。列表按 `fieldPath` 的 UTF-8 字节升序，每个元素是一个字符串。除版本名和这条列表外，字段与 v2 相同。已经按 v2 算出的哈希不能改用 v3 重算。快照条目里保存的是 64 位哈希文本。`snapshot-v2` 的字段顺序不变，因为它只携带这个文本，不展开契约正文。新快照若引用 v3 契约，条目中的 `bodySha256` 就是 v3 哈希。旧快照若引用 v2 契约，仍按 v2 校验那一行，不把缺路径解释成空清单。
+`contract-version-v3` 的值顺序是：版本名 `contract-version-v3`、`contractVersionId`、`contractId`、`contractVersion`、`sourceRevision`、`evidenceStatus`、`semanticStatus`、`sourceReference`、`contractEffectiveFrom`、`contractEffectiveTo`、`payloadFormat`、证据列表、金额路径列表。证据元素的顺序仍是 `evidenceId`、`evidenceStatus`、`sourceReference`、`quotedNote`。路径列表按 `fieldPath` 的 UTF-8 字节升序，每个元素是一个字符串。封存状态、行版本、时间戳、`body_encoding`、`path_count` 和 `material_sha256` 都不进入正文哈希。`path_count` 必须等于路径列表的元素个数；它保存这份个数，不在哈希里再占一个字段。
+
+`payloadFormat` 是这份正文里的字符串，必须参加哈希。当前枚举只有 `JSON`，表示整份报文按 JSON 文本读取。要增加格式，先修订本设计，写明该格式怎样定位节点，再把新字符串加入枚举和表约束。编码名保持 `contract-version-v3`。新字符串改变字段内容，`materialSha256` 和 `bodySha256` 都会变；字段顺序不变，不为此新建 v4。未登记的字符串、空字符串、NULL，以及大小写不同的 `json`，都不能写成 v3 行。v2 行没有这个字段，列值保持空。空列表示 v2 编码不含格式，不把该行当成 `JSON`。
+
+已经按 v2 算出的哈希不能改用 v3 重算。第七轮示例里的 v3 字节还没有 `payloadFormat`，本轮废止，不作为当前 v3 定义。废止的正文哈希是 `8fcf8e33c4782176e79fee30c329a22f9180f5890b03507fea4b028e7df317ee` 和 `6fee099e591e9c029097fb16e3d14f5e350dd1f9e1316d5708b96e71240a85ec`。废止的创建请求哈希是 `af14c43c4d110c55fc2ec34470af446e7754cdc243725510402b8e02f0d0b9b5` 和 `21cb8dc0cd33fe2a5a4e54fec335701e14dd6b800f9169002abe542eb4804268`。这些值没有写入数据库。快照条目里保存的是 64 位哈希文本。`snapshot-v2` 的字段顺序不变，因为它只携带这个文本，不展开契约正文。新快照若引用 v3 契约，条目中的 `bodySha256` 就是包含 `payloadFormat` 和路径列表的 v3 哈希。旧快照若引用 v2 契约，仍按 v2 校验那一行。v2 行没有路径定义，校验不把它补成空清单。
 
 映射版本 `mapping-version-v2` 的值顺序：版本名、`mappingVersionId`、`mappingId`、`mappingVersion`、`contractVersionId`、`platform`、`fieldPath`、`sourceDataType`、`candidateAmountTypeCode`、`candidateDisposition`、`mappingEligibility`、`semanticStatus`、`evidenceStatus`、`unitConstraint`、`currencyConstraint`、`precisionConstraint`、`transformationPolicy`、`aggregationPolicy`、证据列表。审核状态不进入正文哈希。封存后审核状态也不允许再改。
 
@@ -976,7 +1005,75 @@ CREATE TABLE amount_mapping_idempotency_request (
 
 快照 `snapshot-v2` 的值顺序：版本名、`typeCatalogVersionId`、目录哈希、契约条目列表、映射条目列表、冲突条目列表。契约条目是 `contractVersionId`、`bodySha256`。映射条目是 `mappingVersionId`、`contractVersionId`、`fieldPath`、`lifecycleInSnapshot`、`mappingEffectiveFrom`、`mappingEffectiveTo`、`bodySha256`。冲突条目是 `conflictDecisionId`、`contractVersionId`、`fieldPath`、`conflictEffectiveFrom`、`conflictEffectiveTo`、`bodySha256`。候选契约版本补进契约条目后，才会影响这个哈希。
 
-请求 `request-v2` 使用同一套类型编码。它只用于幂等请求的 `requestHash`，不替代上面五种正文哈希。
+请求 `request-v2` 使用同一套类型编码。它只用于幂等请求的 `requestHash`，不替代上面五种正文哈希。`contract-material-v1` 也使用这套类型编码。它只负责判断材料是不是同一份，不写入 `body_encoding`，也不代替 `bodySha256`。
+
+### 路径列表
+
+契约中的一条路径是 UTF-8 字符串。编码时不做 Unicode 归一化，也不去掉首尾空白。字节长度是 1 到 512，中间不能有字节 `00`。
+
+按 `.` 分成一段或多段，段不能为空。每一段符合 `^[A-Za-z_][A-Za-z0-9_]*(\[\])?$`。`[]` 是重复标记，只放在段名后面。具体下标由提取时按报文展开，不写入契约路径。
+
+因此 `total`、`shipping_fee`、`wmPoiReceiveCent` 和 `extras[].reduce_fee` 符合语法。`extras[0].reduce_fee`、空字符串、`.total` 和 `extras.` 不符合语法，创建请求返回 `AMOUNT_PATH_INVALID`。
+
+四项检查在哈希之前完成：
+
+1. 数量。`path_count`、路径行数、v3 路径列表的元素个数必须相等。任一不同，分类为 `CONTRACT_PATHS_CORRUPT`。已经读到的较少行不进入提取。
+2. 排序。全部路径按 UTF-8 无符号字节升序。`shipping_fee` 在 `total` 之前，因为首字节 `73` 小于 `74`。创建和校验都先排序再编码。数据库返回顺序不进入哈希。用未排序字节算出的哈希不能保存，也不能拿来通过校验。
+3. 内容。每一条都要符合上面的语法。不符合时分类为 `CONTRACT_PATH_INTEGRITY_FAILED`。
+4. 重复。UTF-8 字节完全相同的路径只保留一条。请求返回 `AMOUNT_PATH_DUPLICATE`。库内仍出现重复时，分类为 `CONTRACT_PATH_INTEGRITY_FAILED`。
+
+路径表与正文哈希的关系：路径列表是 v3 正文的最后一项。路径表不另存哈希。校验时把路径行按字节序排好，放回整份 v3 正文，重算结果必须等于 `bodySha256`。只改路径表、不改 `bodySha256`，校验失败。材料指纹使用同一份排好序的路径列表。
+
+封存约束：`publication_state = SEALED` 之后，进入 v3 正文的列不可更新，该版本的路径行和证据行也不可插入、修改或删除。`payload_format` 和 `path_count` 属于正文。路径或格式要变化时，创建新版本。提取只读取已封存、并且分类为 `CONTRACT_PATHS_READY` 或 `CONTRACT_PATHS_EMPTY` 的 v3。未封存行即使当时能够重算哈希，也不供提取。
+
+### sourceRevision 生成
+
+`bodySha256` 含有 `sourceRevision`。材料是否相同由 `materialSha256` 决定，这份指纹不含 `sourceRevision`，也不含 `contractVersionId` 和 `evidenceId`。修订号因此可以在正文哈希之前确定。
+
+`contract-material-v1` 的值顺序是：编码名 `contract-material-v1`、`contractId`、`contractVersion`、`evidenceStatus`、`semanticStatus`、`sourceReference`、`contractEffectiveFrom`、`contractEffectiveTo`、`payloadFormat`、证据列表、金额路径列表。证据元素不含 `evidenceId`，排序键与请求相同，依次是 `evidenceStatus`、`sourceReference`、`quotedNote`。元素先按这个顺序连接，再取 SHA-256，列表里放类型 `06` 和这 32 字节。路径规则与 v3 正文相同。
+
+同一次事务按下面的顺序执行：
+
+1. 校验 `payloadFormat`、路径语法、重复路径和证据。失败时不分配修订号，也不计算正文哈希。
+2. 计算 `materialSha256`。这一步还没有 `contractVersionId`、`sourceRevision` 和 `evidenceId`。
+3. 锁定该 `contractId` 的家族行，直到事务结束。
+4. 查找同一 `contractId` 下 `material_sha256` 相等的版本。找到则返回该行已有的 `contractVersionId`、`sourceRevision` 和 `bodySha256`，`result = EXISTING`。这次请求不再编码一个更大的修订号。
+5. 找不到时，`sourceRevision` 取该家族当前最大 `source_revision` 加 1。家族还没有版本时取 1。已经存在的 v2 行继续占用它们的修订号，新的 v3 往后续编。
+6. 分配新的 `contractVersionId`。它是新的身份，不从哈希截取。
+7. 插入证据行并读回 `evidenceId`。没有证据则跳过。
+8. 按 `contract-version-v3` 计算 `bodySha256`。此时修订号、版本 ID 和证据 ID 都已经确定，只计算这一次。
+9. 插入版本行和路径行。`path_count` 等于路径元素个数。`body_encoding` 写成 `contract-version-v3`。
+10. 提交后返回 `CREATED`。
+
+这个顺序把循环拆开：材料指纹决定是否新建；修订号在确定要新建之后，用家族最大值加一得到；正文哈希使用这个已经确定的修订号，并只保存这一份。查找旧材料时比较 `materialSha256`，不临时改写修订号再重算正文。
+
+若材料指纹也写入 `sourceRevision`，顺序会套住自己：要先知道修订号才能计算指纹，又要先比较指纹才知道该用旧修订号还是下一号。本设计不使用这个顺序。下面的测试向量给出修订号 1 和修订号 2 的两个正文哈希，用来说明二者不同。创建算法只保存步骤 5 分配到的那一个。
+
+### 契约路径分类
+
+分类读取一条契约版本、它的证据行和它的路径行。提取和 Worker 都使用这份结果。完整性失败时停止，不把已读到的路径子集交给提取。
+
+| 结果 | 含义 |
+| --- | --- |
+| `CONTRACT_PATHS_UNDEFINED` | v2 契约没有路径定义。提取阻断。快照仍可按 v2 校验这行历史契约 |
+| `CONTRACT_PATHS_EMPTY` | v3 声明了空路径列表，数量和两份哈希都一致。提取的 `payloadCode` 为 `OK`，字段结果为空 |
+| `CONTRACT_PATH_INTEGRITY_FAILED` | v3 路径重复、语法不合，或按规范顺序重算的正文哈希或材料指纹与库存值不一致。提取阻断 |
+| `CONTRACT_PATHS_CORRUPT` | v3 路径数据缺失或损坏，也包括 v2 行混入了路径或格式。提取阻断 |
+| `CONTRACT_PATHS_READY` | v3 至少有一条路径，数量、语法、排序和两份哈希都一致。提取按完整清单继续 |
+| `CONTRACT_VERSION_HASH_MISMATCH` | v2 行按 v2 重算不一致。提取阻断。这不是空路径 |
+
+算法：
+
+1. 版本行不存在时，调用方返回 `CONTRACT_VERSION_UNRESOLVED`。缺版本不归入空路径。
+2. `body_encoding = contract-version-v2`。`payload_format`、`path_count`、`material_sha256` 任一有值，或路径表有行，返回 `CONTRACT_PATHS_CORRUPT`。否则按 v2 重算。不一致返回 `CONTRACT_VERSION_HASH_MISMATCH`。一致返回 `CONTRACT_PATHS_UNDEFINED`。
+3. `body_encoding = contract-version-v3`。`payload_format` 不是 `JSON`、`path_count` 为空、`material_sha256` 为空、路径行读不到，或某条 `field_path` 为空，返回 `CONTRACT_PATHS_CORRUPT`。
+4. v3 的路径行数与 `path_count` 不同，返回 `CONTRACT_PATHS_CORRUPT`。到这里就停止，不用较少的那一侧重新编码。
+5. 路径字节重复，或任一路径不符合语法，返回 `CONTRACT_PATH_INTEGRITY_FAILED`。
+6. 将路径按 UTF-8 字节升序排列，连同 `payloadFormat` 和其余 v3 字段重算 `bodySha256`，再用不含版本 ID 和修订号的材料编码重算 `materialSha256`。任一与库存值不同，返回 `CONTRACT_PATH_INTEGRITY_FAILED`。不改用未排序列表再试。
+7. 两份哈希都一致且 `path_count = 0`，返回 `CONTRACT_PATHS_EMPTY`。`path_count > 0` 时返回 `CONTRACT_PATHS_READY`。
+8. 其他 `body_encoding` 返回 `CONTRACT_PATHS_CORRUPT`。
+
+正文重算失败时，不再区分“只改了路径”和“改了证据”。SHA-256 不能从结果还原被改的字段。两种都返回 `CONTRACT_PATH_INTEGRITY_FAILED`，也都不提取部分路径。
 
 ### request-v2 测试向量
 
@@ -1022,9 +1119,11 @@ SHA-256：`c34a9479a0c2c56156fe77779568434750ac99aeaa4bbf4ba9e7074c9ebd9919`。
 
 `v1` 是分隔符编码，没有写入过数据库。读到 `-v1` 时校验失败，不转换成后续版本。
 
-`contract-version-v2` 与 `contract-version-v3` 可以同时被校验，但一行契约版本只使用 `body_encoding` 指定的一种。映射、冲突、目录和快照仍使用各自的 `v2`。新的管理请求使用 `request-v3`。下面这组向量用同一份材料分别按 v2 和 v3 编码。v2 没有路径。v3 的路径输入顺序是 `total` 然后 `shipping_fee`，规范顺序是 `shipping_fee` 然后 `total`。
+`contract-version-v2` 与 `contract-version-v3` 可以同时被校验，但一行契约版本只使用 `body_encoding` 指定的一种。映射、冲突、目录和快照仍使用各自的 `v2`。新的管理请求使用 `request-v3`。下面这组向量用同一份标量材料。v2 没有 `payloadFormat`，也没有路径。v3 的 `payloadFormat` 是 `JSON`，路径输入顺序是 `total` 然后 `shipping_fee`，规范顺序是 `shipping_fee` 然后 `total`。证据列表为空，两个时间都是 NULL，`contractVersionId` 是 `cv-1`，`contractId` 是 `c-1`，外部版本是“未提供”，`sourceRevision` 是 1。
 
-v2 字节：
+这些新增哈希用两套独立的 SHA-256 实现复算过，结果一致：Python `hashlib.sha256` 与 OpenSSL `dgst -sha256`。同一方法再次得到历史 v2 哈希，原值不变。本文件记录的是设计向量，还没有写入数据库。
+
+v2 字节保持原定义：
 
 ```text
 0100000013636f6e74726163742d76657273696f6e2d7632010000000463762d310100000003632d310100000009e69caae68f90e4be9b020000000000000001010000000445312d41010000000ce983a8e58886e7a1aee8aea401000000075352432d30303100000500000000
@@ -1032,23 +1131,111 @@ v2 字节：
 
 SHA-256：`3174d60d23276ba947fc796c7c59d8dbca00283b6d33a699bdb61facad80af05`。
 
-v3 字节：
+v3 在两个 NULL 之后写入 `payloadFormat`。`JSON` 的编码是 `01000000044a534f4e`。规范字节：
 
 ```text
-0100000013636f6e74726163742d76657273696f6e2d7633010000000463762d310100000003632d310100000009e69caae68f90e4be9b020000000000000001010000000445312d41010000000ce983a8e58886e7a1aee8aea401000000075352432d303031000005000000000500000002010000000c7368697070696e675f6665650100000005746f74616c
+0100000013636f6e74726163742d76657273696f6e2d7633010000000463762d310100000003632d310100000009e69caae68f90e4be9b020000000000000001010000000445312d41010000000ce983a8e58886e7a1aee8aea401000000075352432d303031000001000000044a534f4e05000000000500000002010000000c7368697070696e675f6665650100000005746f74616c
 ```
 
-SHA-256：`8fcf8e33c4782176e79fee30c329a22f9180f5890b03507fea4b028e7df317ee`。
+SHA-256：`2f67578050831aba6ff3b3c28733daa74d898a995265d82c242b976882cdde78`。
 
-只保留路径 `total` 时，v3 的 SHA-256 变为 `6fee099e591e9c029097fb16e3d14f5e350dd1f9e1316d5708b96e71240a85ec`。不排序就把 `total` 放在 `shipping_fee` 前面，得到的不是上面的规范哈希。
-
-对应的 `request-v3` 创建契约版本请求，路径同样先按规范排序。证据列表为空，两个时间为 NULL，操作者是 `op-1`，角色是 `EDITOR`。
+只把 `payloadFormat` 的字符串改成 `XML`，路径和修订号仍是上面这一组。`XML` 未进入枚举，接口返回 `PAYLOAD_FORMAT_UNKNOWN`，不插入行。编码本身的字节和哈希用来证明该字段参加正文：
 
 ```text
-010000000a726571756573742d763301000000174352454154455f434f4e54524143545f56455253494f4e010000000f534f555243455f434f4e54524143540100000003632d310100000003632d3101000000046f702d310100000006454449544f520100000009e69caae68f90e4be9b010000000445312d41010000000ce983a8e58886e7a1aee8aea401000000075352432d303031000005000000000500000002010000000c7368697070696e675f6665650100000005746f74616c
+0100000013636f6e74726163742d76657273696f6e2d7633010000000463762d310100000003632d310100000009e69caae68f90e4be9b020000000000000001010000000445312d41010000000ce983a8e58886e7a1aee8aea401000000075352432d30303100000100000003584d4c05000000000500000002010000000c7368697070696e675f6665650100000005746f74616c
 ```
 
-SHA-256：`af14c43c4d110c55fc2ec34470af446e7754cdc243725510402b8e02f0d0b9b5`。只声明 `total` 时，请求哈希变为 `21cb8dc0cd33fe2a5a4e54fec335701e14dd6b800f9169002abe542eb4804268`。
+SHA-256：`9782c9680ab7a4430be2ce7526f366a8406af8224265d379f14ea8bea20c941e`。
+
+只把 `JSON` 改成小写 `json`，其余与规范 v3 相同。SHA-256 是 `8c10faf953f6185bbfde50de2855eb50d8eecce6e992c6c8cc075a6c3cd100b7`。完整字节：
+
+```text
+0100000013636f6e74726163742d76657273696f6e2d7633010000000463762d310100000003632d310100000009e69caae68f90e4be9b020000000000000001010000000445312d41010000000ce983a8e58886e7a1aee8aea401000000075352432d303031000001000000046a736f6e05000000000500000002010000000c7368697070696e675f6665650100000005746f74616c
+```
+
+这个值同样不能入库。大小写不同就是另一份正文。
+
+`payloadFormat` 仍是 `JSON`，路径只保留 `total`：
+
+```text
+0100000013636f6e74726163742d76657273696f6e2d7633010000000463762d310100000003632d310100000009e69caae68f90e4be9b020000000000000001010000000445312d41010000000ce983a8e58886e7a1aee8aea401000000075352432d303031000001000000044a534f4e050000000005000000010100000005746f74616c
+```
+
+SHA-256：`5ae79c53d432d6ca2a27e6605bcaf11acbeb423a04c1b01d5afb8d9ee47c9709`。
+
+`payloadFormat` 仍是 `JSON`，路径列表为空。这是 `CONTRACT_PATHS_EMPTY` 使用的正文，分类还要求库存 `path_count = 0` 且材料指纹一致：
+
+```text
+0100000013636f6e74726163742d76657273696f6e2d7633010000000463762d310100000003632d310100000009e69caae68f90e4be9b020000000000000001010000000445312d41010000000ce983a8e58886e7a1aee8aea401000000075352432d303031000001000000044a534f4e05000000000500000000
+```
+
+SHA-256：`60f96aca692a7dff254fd1efd4362afe4d0f2e28529cdeea566cfd60c5523959`。
+
+同一份 `JSON` 和两条规范路径，若正文里的修订号写成 2，整数编码变成 `020000000000000002`。这个哈希只证明修订号参加正文。创建算法在材料指纹已存在时返回修订号 1 的哈希，不保存下面这一份：
+
+```text
+0100000013636f6e74726163742d76657273696f6e2d7633010000000463762d310100000003632d310100000009e69caae68f90e4be9b020000000000000002010000000445312d41010000000ce983a8e58886e7a1aee8aea401000000075352432d303031000001000000044a534f4e05000000000500000002010000000c7368697070696e675f6665650100000005746f74616c
+```
+
+SHA-256：`045b1aa179edd32136069f8266b065078c9813f88c43ad6332c8b8973f5a4c0d`。
+
+不排序、把 `total` 放在 `shipping_fee` 前面，得到的不是规范哈希。这份字节不能通过校验：
+
+```text
+0100000013636f6e74726163742d76657273696f6e2d7633010000000463762d310100000003632d310100000009e69caae68f90e4be9b020000000000000001010000000445312d41010000000ce983a8e58886e7a1aee8aea401000000075352432d303031000001000000044a534f4e050000000005000000020100000005746f74616c010000000c7368697070696e675f666565
+```
+
+SHA-256：`013692f475dcb5b3188d4f5477dc1476b756cd893f59e7c5b7adb65b0fcf3bbd`。
+
+对应的材料指纹不含 `cv-1` 和修订号。`JSON` 与两条规范路径的字节是：
+
+```text
+0100000014636f6e74726163742d6d6174657269616c2d76310100000003632d310100000009e69caae68f90e4be9b010000000445312d41010000000ce983a8e58886e7a1aee8aea401000000075352432d303031000001000000044a534f4e05000000000500000002010000000c7368697070696e675f6665650100000005746f74616c
+```
+
+SHA-256：`939ca9bfc9af4e1124ef53e34cabf20ff099ab8f3162fce383cc98e423d690a0`。
+
+同一材料把格式字符串改成 `XML` 后，材料指纹变为：
+
+```text
+0100000014636f6e74726163742d6d6174657269616c2d76310100000003632d310100000009e69caae68f90e4be9b010000000445312d41010000000ce983a8e58886e7a1aee8aea401000000075352432d30303100000100000003584d4c05000000000500000002010000000c7368697070696e675f6665650100000005746f74616c
+```
+
+SHA-256：`de49b76e9e9156bc1ee96fb75f781458f3b464c2191306f60538c926da82c471`。
+
+`JSON` 且路径为空时，材料指纹是 `f46ab2d25fed711cda8fab694660d9b4cff59339b5343a25d01bd639f7f9073f`。完整字节：
+
+```text
+0100000014636f6e74726163742d6d6174657269616c2d76310100000003632d310100000009e69caae68f90e4be9b010000000445312d41010000000ce983a8e58886e7a1aee8aea401000000075352432d303031000001000000044a534f4e05000000000500000000
+```
+
+`JSON` 且只有 `total` 时，材料指纹是 `1419b3f929df27cab17c3256b1ff884db9d154ee30e9d273c14d815539e4e98d`。完整字节：
+
+```text
+0100000014636f6e74726163742d6d6174657269616c2d76310100000003632d310100000009e69caae68f90e4be9b010000000445312d41010000000ce983a8e58886e7a1aee8aea401000000075352432d303031000001000000044a534f4e050000000005000000010100000005746f74616c
+```
+
+对应的 `request-v3` 创建契约版本请求，在两个 NULL 之后写入 `payloadFormat`，路径按规范排序。证据列表为空，操作者是 `op-1`，角色是 `EDITOR`。
+
+```text
+010000000a726571756573742d763301000000174352454154455f434f4e54524143545f56455253494f4e010000000f534f555243455f434f4e54524143540100000003632d310100000003632d3101000000046f702d310100000006454449544f520100000009e69caae68f90e4be9b010000000445312d41010000000ce983a8e58886e7a1aee8aea401000000075352432d303031000001000000044a534f4e05000000000500000002010000000c7368697070696e675f6665650100000005746f74616c
+```
+
+SHA-256：`ecec9251c88f1b9a606025bc5466060e27988eacb0ad50daa98186cb66d875a3`。
+
+只声明 `total` 时，请求字节和哈希是：
+
+```text
+010000000a726571756573742d763301000000174352454154455f434f4e54524143545f56455253494f4e010000000f534f555243455f434f4e54524143540100000003632d310100000003632d3101000000046f702d310100000006454449544f520100000009e69caae68f90e4be9b010000000445312d41010000000ce983a8e58886e7a1aee8aea401000000075352432d303031000001000000044a534f4e050000000005000000010100000005746f74616c
+```
+
+SHA-256：`e6927deca9a0c389bb0d0aa85edc2cf06386b52129320b28c0d78d43085d8efa`。
+
+`amountPaths` 为空列表时，请求哈希是 `4167bfe3a9bf77872a2d17b70c28baab5068d05dda840c75ad32f7dd8238b260`。完整字节：
+
+```text
+010000000a726571756573742d763301000000174352454154455f434f4e54524143545f56455253494f4e010000000f534f555243455f434f4e54524143540100000003632d310100000003632d3101000000046f702d310100000006454449544f520100000009e69caae68f90e4be9b010000000445312d41010000000ce983a8e58886e7a1aee8aea401000000075352432d303031000001000000044a534f4e05000000000500000000
+```
 
 ### 完整性校验
 
@@ -1058,7 +1245,7 @@ Worker 只按任务上的 `snapshotId` 装载。任何一步失败都停止任�
 2. 读取三类条目。三项数量之和必须等于 `itemCount`。
 3. 按 `snapshot-v2` 重算哈希，必须等于 `contentSha256`。
 4. 读取目录头和全部目录条目。条目数必须等于目录 `itemCount`，重算结果必须等于目录 `contentSha256`，目录 ID 必须等于批次上的 `typeCatalogVersionId`。
-5. 每条契约条目都能读到已封存契约版本。按该行 `body_encoding` 选择 v2 或 v3 重算，结果必须等于条目和版本行上的 `bodySha256`。不能换一种编码再试。v2 行没有金额路径。v3 行的路径行数和排序后的路径必须参加重算。
+5. 每条契约条目都能读到已封存契约版本。按该行 `body_encoding` 选择 v2 或 v3 重算，结果必须等于条目和版本行上的 `bodySha256`。不能换一种编码再试。然后执行本节的路径分类。`CONTRACT_PATHS_UNDEFINED` 表示 v2 没有路径定义，这行仍可作为历史契约条目；提取阶段会阻断，快照装载本身不因此失败。`CONTRACT_PATHS_READY` 和 `CONTRACT_PATHS_EMPTY` 通过。`CONTRACT_PATHS_CORRUPT`、`CONTRACT_PATH_INTEGRITY_FAILED` 和 `CONTRACT_VERSION_HASH_MISMATCH` 使本任务失败。失败后不使用已经读到的部分路径。
 6. 每条映射条目都能读到已封存映射版本，重算结果必须同时等于条目和版本行上的 `bodySha256`。
 7. 每条冲突条目都能读到已封存决定。候选至少两条。每条候选都能读到已封存映射版本，版本重算哈希必须等于 `candidateBodySha256`，也必须等于版本行上的 `bodySha256`。决定按 `conflict-decision-v2` 重算后，必须等于决定行和冲突条目上的 `bodySha256`。
 8. 映射条目、冲突条目、冲突决定和候选映射引用的契约版本，都必须出现在该快照的契约条目中。Worker 从这些契约条目取得 `contractVersionId`，再读取对应正文。条目里没有的契约版本，即使版本表里还在，也不能拿来执行。
@@ -1093,8 +1280,15 @@ Pipeline 的顺序不变：原文、原始金额、来源、按固定快照匹�
 | 其他版本仍可编辑 | 同一 `mappingId` 的另一个版本仍是草稿 | 只有被引用的那个版本封存 |
 | 候选被改写 | 发布前改了候选正文 | `CANDIDATE_BODY_CHANGED`，不产生快照 |
 | 解除冲突 | 新快照结束冲突窗口并开始一条映射 | 旧决定、候选哈希和旧快照不变 |
-| 外部版本重复 | 两次“未提供”但正文指纹不同 | 两个 `sourceRevision` 和两个 `contractVersionId` |
-| 相同正文 | 再次提交同一指纹 | 返回原版本，不新增修订 |
+| 外部版本重复 | 两次“未提供”，材料指纹不同 | 两个 `sourceRevision` 和两个 `contractVersionId` |
+| 相同材料 | 再次提交同一个 `materialSha256` | 返回原版本、原修订号和原 `bodySha256`，不新增修订 |
+| 修订号顺序 | 规范 v3 材料提交两次 | 第一次保存修订号 1，正文哈希 `2f67578050831aba6ff3b3c28733daa74d898a995265d82c242b976882cdde78`。第二次仍返回这一对。不保存修订号 2 的哈希 `045b1aa179edd32136069f8266b065078c9813f88c43ad6332c8b8973f5a4c0d` |
+| `payloadFormat` 不同 | 路径相同，格式字符串分别为 `JSON` 和 `XML` | 材料指纹分别是 `939ca9bfc9af4e1124ef53e34cabf20ff099ab8f3162fce383cc98e423d690a0` 和 `de49b76e9e9156bc1ee96fb75f781458f3b464c2191306f60538c926da82c471`。`XML` 返回 `PAYLOAD_FORMAT_UNKNOWN`，不入库 |
+| 空路径声明 | v3，`path_count = 0`，正文哈希 `60f96aca692a7dff254fd1efd4362afe4d0f2e28529cdeea566cfd60c5523959` | 分类 `CONTRACT_PATHS_EMPTY` |
+| v2 没有路径定义 | v2 哈希与历史向量一致，路径行数为 0 | 分类 `CONTRACT_PATHS_UNDEFINED`。提取阻断。不补成空列表 |
+| 路径数量不符 | `path_count` 大于实际路径行数 | `CONTRACT_PATHS_CORRUPT`。不提取剩余路径 |
+| 路径未排序入库 | 库存哈希等于未排序向量 `013692f475dcb5b3188d4f5477dc1476b756cd893f59e7c5b7adb65b0fcf3bbd` | `CONTRACT_PATH_INTEGRITY_FAILED` |
+| 封存后修改路径 | 修改已封存版本的路径或 `payloadFormat` | 被拒绝。变化必须成为新版本 |
 | 封存后修改 | 修改已进入快照的契约版本 | 被拒绝 |
 | 多个“未提供” | 报文只有外部版本号 | `UNMAPPED`，不猜最新修订 |
 | 目录变化 | 新目录把类型改为 `ACTIVE` 后发布新快照 | 旧快照仍指向旧目录，类型资格不变 |
@@ -1129,7 +1323,7 @@ MySQL、账号体系和第一份可发布的类型目录都还没有接受。本
 
 ## 18. 设计结论
 
-同一份快照可以保留同一字段的多个不重叠窗口。迟到报文按接收时间命中其中的历史映射，包括已经标成 `RETIRED` 的窗口。冲突决定保存候选版本号和正文哈希，并在发布时封存候选版本，因此历史决定可以还原当时比较过的映射正文。官方没有版本号时，用 `sourceRevision` 和正文指纹管理材料修订。类型目录版本写在发布批次上，目录自己记录条目数量和指纹。
+同一份快照可以保留同一字段的多个不重叠窗口。迟到报文按接收时间命中其中的历史映射，包括已经标成 `RETIRED` 的窗口。冲突决定保存候选版本号和正文哈希，并在发布时封存候选版本，因此历史决定可以还原当时比较过的映射正文。官方没有版本号时，用 `sourceRevision` 和材料指纹管理材料修订。正文哈希在修订号分配之后计算，并包含 v3 的 `payloadFormat` 与路径列表。类型目录版本写在发布批次上，目录自己记录条目数量和指纹。
 
 Worker 只接受完整通过校验的 `MappingSnapshot`。候选依赖的契约版本必须已经在该快照的契约条目里。任一数量、正文或哈希对不上，就停止该任务。它不改读最新配置，也不修复快照。
 
@@ -1137,7 +1331,7 @@ Worker 只接受完整通过校验的 `MappingSnapshot`。候选依赖的契约�
 
 没有发现用配置状态绕过语义确认的路径。类型不是 `ACTIVE`、资格未确认或被禁止、冲突尚未形成已审核决定，都不能进入正式业务映射。
 
-这是第七轮修订稿，用来提交审查。它还不是冻结设计，也没有批准任何生产金额映射。本轮纠正契约正文哈希没有覆盖金额路径的问题。
+这是第八轮修订稿，用来提交审查。它还不是冻结设计，也没有批准任何生产金额映射。本轮把 `payloadFormat` 纳入 v3 正文哈希，拆开契约路径的五种结果，并规定 `sourceRevision` 在正文哈希之前由材料指纹分配。
 
 ## 19. 修订记录
 
@@ -1150,3 +1344,4 @@ Worker 只接受完整通过校验的 `MappingSnapshot`。候选依赖的契约�
 | 第五轮 | 候选依赖的契约版本写入新快照。用独立请求表重放第一次的完整响应。哈希改为带类型和长度的编码 |
 | 第六轮 | 固定每种变更请求的 `request-v2` 字段顺序、排序平局和二进制范围，并记录三组哈希测试向量 |
 | 第七轮 | 设计纠错。新增 `contract-version-v3` 和金额路径行，使路径清单进入契约正文哈希。`contract-version-v2` 的字节定义不改 |
+| 第八轮 | 设计纠错。`payloadFormat` 进入 v3 正文和 `contract-material-v1`。路径结果拆成五种分类。`sourceRevision` 先由材料指纹分配，再计算包含修订号的正文哈希。v2 历史哈希保持原字节 |
