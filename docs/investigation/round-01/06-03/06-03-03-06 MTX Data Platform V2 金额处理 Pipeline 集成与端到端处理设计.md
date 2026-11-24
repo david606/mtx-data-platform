@@ -22,7 +22,7 @@
 | 设计决定 | 本文为了把各阶段接成一条链路而作出的选择。它不改写已冻结文档 |
 | 待确认 | 上游没有给出执行状态机、物理索引或计算规则正文 |
 
-本文已完成第二轮架构审查整改，待第三轮架构审查。尚未正式冻结。它不代表 Pipeline、任务状态或生产映射已经存在。当前标准类型 38 个是 `DRAFT`，`AMT.FEE.DELIVERY` 是 `RETIRED`，0 个是 `ACTIVE`。已确认生产映射数量是 0。文中的 `MAPPED`、标准化和计算都是规则，不是已经发生的生产处理。测试都没有执行。
+本文已完成第三轮架构审查整改，待第四轮架构审查。尚未正式冻结。它不代表 Pipeline、任务状态或生产映射已经存在。当前标准类型 38 个是 `DRAFT`，`AMT.FEE.DELIVERY` 是 `RETIRED`，0 个是 `ACTIVE`。已确认生产映射数量是 0。文中的 `MAPPED`、标准化和计算都是规则，不是已经发生的生产处理。测试都没有执行。
 
 ## 1. 目标、范围和非目标
 
@@ -98,9 +98,13 @@
         |     MAPPED：按已经固定的标准化版本和转换版本继续，见第 8 节
         |
         +-- 不存在：只对这条新路径做匹配
-              观测和匹配结果一次持久化后返回
+              persistObservation 一次写出观测和匹配结果
+              CREATED：返回本次持久化结果
+              ALREADY_EXISTS：返回胜出方的观测和匹配结果
+                不重新匹配，不覆盖 mappingStatus
               UNMAPPED 或 CONFLICT：该字段分支结束
-              MAPPED：门禁通过后才固定规则版本，见第 5.6 节和第 8 节
+              MAPPED：门禁通过后先持久化版本固定记录
+                成功后才写出标准化结果，见第 8 节
         |
         v
 汇总字段结果，再按第 11 节确定任务状态
@@ -138,8 +142,8 @@
 | `receivedAt` | 唯一参与窗口判断的业务时间 |
 | `snapshotId` | 本次固定的映射快照 |
 | `parserVersion` | 首次执行时固定。重试复用。不进入观测身份。不在这里设计版本体系 |
-| `normalizationRuleVersion` | 进入标准化并在写出结果前才固定。重试复用。不在任务开始时编造。当前尚未分配 |
-| `conversionRuleVersion` | 发生单位转换时，与上一列一起在写出前固定。不转换时为空。不用 `NO_CONVERT` 填充 |
+| `normalizationRuleVersion` | 门禁通过后写入可恢复记录，成功后才写出标准化结果。重试读这份记录。未分配时不编造。不在任务开始时确定 |
+| `conversionRuleVersion` | 需要转换时与上一列一起固定。不转换时为逻辑空值 NULL。不用 `NO_CONVERT` 填充。不表示数据库类型已选定 |
 | `businessObjectType`、`businessObjectId` | 可选。来源未设计时为空。不从金额字段推断。不进入观测身份 |
 
 `tenantId` 不进入上下文的必填项，也不进入观测身份。06-03-01 已说明租户模型未定义。本文不单造租户字段。
@@ -216,7 +220,7 @@
 
 币种必须是契约已经写明的值。单位必须识别为该契约允许的来源单位。识别失败不补成元、分或人民币。精度沿用 06-03-03-04：不发明目标小数位或业务最小最大值，也不把存储宽度当成业务范围。字面量在技术上无法按原数字容纳时，该字段失败，不舍入。转换策略只有 `NO_CONVERT`。没有封存的 `conversionRuleVersion` 时，不生成换算后的结果。`NO_CONVERT` 不是 `normalizationRuleVersion`。
 
-任一门禁失败，都不生成有效的 `NormalizedAmount`，也不为了失败补一个规则版本号。观测保持原样。不默认值，不截断，不取绝对值，不四舍五入。门禁通过之后、写出结果之前，才固定 `normalizationRuleVersion` 和 `conversionRuleVersion`，规则见第 8 节。
+任一门禁失败，都不生成有效的 `NormalizedAmount`，也不为了失败补一个规则版本号。观测保持原样。不默认值，不截断，不取绝对值，不四舍五入。门禁通过之后，先按第 8 节把规则版本固定记录可靠保存，保存成功后才写出 `NormalizedAmount`。
 
 当前没有已发布映射，所以现在不会写出标准化结果。
 
@@ -312,10 +316,12 @@ AmountCalculation
     +-- 不存在
            |
            +-- 只对这条新路径执行匹配
-           +-- 生成观测及匹配结果
-           +-- 一次持久化后返回
+           +-- persistObservation
+           |     CREATED：返回本次持久化的观测和匹配结果
+           |     ALREADY_EXISTS：返回胜出方的观测和匹配结果
+           |       不重新匹配，不覆盖
            +-- UNMAPPED 或 CONFLICT：该字段分支结束
-           +-- MAPPED：门禁通过后再固定规则版本
+           +-- MAPPED：按第 8 节的版本时序继续
 ```
 
 这是逻辑顺序，不是三个独立服务，也不是三个独立数据库事务。
@@ -331,19 +337,30 @@ normalizationIdentity =
 
 设计身份已经确定。版本的分配和发布机制尚未设计。当前没有可执行的生产标准化规则，也没有已发布的转换规则。
 
-首次进入标准化时：
+首次进入标准化的顺序是：
 
-1. 已经取得这条 `ObservedAmount`，并读取它已固定的 `snapshotId` 和匹配结果。
-2. 先通过第 5.6 节全部门禁。未通过则不生成结果，也不编造版本号。
-3. 在写出结果之前固定 `normalizationRuleVersion`。
-4. 发生单位转换时，同时固定 `conversionRuleVersion`。
-5. 不转换时，`conversionRuleVersion` 为空。`NO_CONVERT` 不是版本号，不能填进这一列。
-6. 当前 `normalizationRuleVersion` 尚未分配。未分配且不转换时，沿用 06-03-03-04：同一观测在“不转换、且转换版本为空”这一档至多一个逻辑结果。空值就是这一档的身份成分，不另造一个虚构版本号。
-7. 这两个值一旦固定，就随该逻辑结果保存，供重试读回。物理索引未实现，本文不声称已经幂等落地。
+1. 已经取得这条 `ObservedAmount`。
+2. 读取该观测上原有的 `snapshotId` 和匹配结果。不改读最新快照。
+3. 通过 06-03-03-04 的全部标准化门禁。未通过则不固定版本，也不生成结果。
+4. 按当时已经存在的规则确定 `normalizationRuleVersion`。当前尚未分配时，确定的内容是“未分配”，不编造版本号。
+5. 需要单位转换时，同时确定 `conversionRuleVersion`。不转换时该版本保持空，逻辑上是 NULL。`NO_CONVERT` 不是版本号，不能写入这一列。本文不把 NULL 写成已经选定的数据库类型。
+6. 把这两个确定值可靠写入任务执行上下文，或等价的可恢复记录。写入成功之前，内存中的值还不是已固定版本。
+7. 只有这一记录持久化成功，才允许写出 `NormalizedAmount`。写入失败则不写标准化结果。
+8. 结果写出之后，执行上下文里的版本固定记录和标准化结果必须能用同一个 `normalizationIdentity` 相互核对。
 
-同一逻辑身份重试时，复用原来的 `normalizationRuleVersion` 和 `conversionRuleVersion`，包括两者都为空的那一档。不读取最新规则替换。已有结果直接返回。没有结果时仍按原版本继续。原来固定的版本已经不可用时，任务阻断并报告，不自动换成最新版本。
+故障恢复：
 
-将来规则版本变化时，新版本形成新的逻辑身份和新结果。旧结果保留，原观测不修改。新版本不应用于旧任务的重试。门禁失败时重复处理仍然没有结果。
+| 故障位置 | 重试行为 |
+| --- | --- |
+| 门禁通过前 | 不固定规则版本。按原观测和原上下文重新执行门禁 |
+| 门禁通过后、版本固定记录持久化前 | 按既有规则再次确定版本。还没有可恢复记录时，不能声称已经有固定版本 |
+| 版本固定记录持久化后、结果写出前 | 读取该记录里的原版本。不重新选择，也不改读最新发布的规则 |
+| 结果写出后 | 读取并复用已有 `NormalizedAmount` |
+| 已固定版本不可用 | 任务阻断并报告。不自动切换到其他版本 |
+
+重试不得因为后来发布了新规则而替换已经固定的版本。未分配且不转换时，仍沿用 06-03-03-04：同一观测在“不转换、且转换版本为空”这一档至多一个逻辑结果。物理表、DDL、索引和事务实现仍属于后续存储设计。本文不声称这些能力已经实现。
+
+将来规则版本变化时，新版本形成新的逻辑身份和新结果。旧结果保留，原观测不修改。新版本不应用于已经写下版本固定记录的旧任务重试。门禁失败时重复处理仍然没有结果。
 
 计算逻辑身份在上游没有冻结。本文不规定它的最终字段组合，也不把它写成已经可用的生产身份。在后续详细设计冻结之前，只遵守这几条：
 
@@ -399,7 +416,7 @@ normalizationIdentity =
 
 | 内容 | 边界 |
 | --- | --- |
-| 执行上下文 | 独立于单条观测。保存本次固定的快照、契约版本和 `parserVersion`。标准化两个版本在写出前固定后也写入，供重试读回 |
+| 执行上下文 | 独立于单条观测。保存本次固定的快照、契约版本和 `parserVersion`。标准化版本固定记录必须在 `NormalizedAmount` 写出前保存成功 |
 | 观测与匹配结果 | 按观测身份一次写出。不允许只留下观测而没有匹配结果，也不允许后再覆盖 `mappingStatus` |
 | 标准化结果 | 按 06-03-03-04 的标准化逻辑身份。没有观测依据则不能写。版本为空时不另造版本号 |
 | 计算结果 | 身份尚未冻结，见第 8 节。没有标准化输入则不能写 |
@@ -407,7 +424,7 @@ normalizationIdentity =
 
 不要求一份报文的全部金额字段共用一个长事务，也不要求查询、匹配和持久化分成三个事务。每个具体路径的领域结果是独立的幂等单元。这是集成边界，不是已经实现的事务。
 
-两个 Worker 同时处理同一观测身份时，行为约束是：不能因为两边都先查到不存在，就留下两条有效观测；不能留下有观测但没有匹配结果的有效中间状态；不能写入两个不同的 `mappingStatus`。竞争失败的一方读取并返回已经持久化的那一条观测及其匹配结果，不再匹配。不得用 JVM 本地锁代替跨 Worker 的幂等。物理唯一索引、锁和事务仍归后续存储设计，本文不设计 DDL，也不声称已经实现。
+两个 Worker 同时处理同一观测身份时，行为约束是：不能因为两边都先查到不存在，就留下两条有效观测；不能留下有观测但没有匹配结果的有效中间状态；不能让两个 `mappingStatus` 同时成为该身份的有效结果。`persistObservation` 只返回 `CREATED` 或 `ALREADY_EXISTS`，并且两种结果都带上最终持久化的观测和匹配结果。`ALREADY_EXISTS` 的一方使用返回值里的胜出记录，不重新匹配，不用自己内存中的匹配结果覆盖已有 `mappingStatus`。不得用 JVM 本地锁代替跨 Worker 的幂等。物理唯一索引、锁、隔离级别、事务和 DDL 仍归后续存储设计，本文不设计它们，也不声称已经实现。
 
 必须满足：标准化结果能指回观测；计算结果能指回标准化输入和规则版本；`UNMAPPED` 和 `CONFLICT` 没有标准化结果；同一已定义的逻辑身份没有第二条有效结果；重试不更换 `snapshotId`、`contractVersionId`、`parserVersion`、`normalizationRuleVersion` 或 `conversionRuleVersion`。逻辑身份必须能按同样的输入再次算出。
 
@@ -438,7 +455,7 @@ normalizationIdentity =
 AmountExtractionResult extract(AmountExtractionRequest request);
 ObservedAmount findByIdentity(ObservationIdentity identity);
 AmountMappingMatchResult match(AmountMappingMatchRequest request);
-void persistObservation(ObservedAmount observation);
+PersistObservationResult persistObservation(ObservedAmount observation);
 AmountNormalizationResult normalize(AmountNormalizationRequest request);
 AmountCalculationResult calculate(AmountCalculationRequest request);
 AmountProcessingResult execute(AmountProcessingCommand command);
@@ -446,9 +463,36 @@ AmountProcessingResult execute(AmountProcessingCommand command);
 
 `findByIdentity` 是观测仓储端口。它按冻结身份查询。不存在时由 Pipeline 继续后面的匹配，不在这个端口里匹配或标准化。已存在时返回原观测和其中已经保存的匹配结果。
 
-`match` 是纯领域计算，只用于尚不存在的新路径。它使用本次固定的 `snapshotId` 和已经提取的字段结果，得到 `MAPPED`、`UNMAPPED`、`CONFLICT` 或任务失败。它不写存储，不切换快照，不修改已有观测。
+`match` 是纯领域计算，只用于本次查询未命中的新路径。它使用本次固定的 `snapshotId` 和已经提取的字段结果，得到 `MAPPED`、`UNMAPPED`、`CONFLICT` 或任务失败。它不写存储，不切换快照，不修改已有观测。
 
-`persistObservation` 由 Writer 实现。新观测和匹配结果同一次写出。Pipeline 负责调用顺序：先查询，已存在则恢复；不存在则匹配，再持久化，再返回持久化结果。Worker 只装配这些端口的实现，依赖方向仍按 ADR-0002。
+`persistObservation` 由 Writer 实现，返回 `PersistObservationResult`，不是空返回。结果只有两种：
+
+| 结果 | 含义 | Pipeline 怎么用 |
+| --- | --- | --- |
+| `CREATED` | 本次成功创建这一身份 | 返回本次持久化的观测和匹配结果 |
+| `ALREADY_EXISTS` | 同一身份已经由其他执行方创建 | 返回结果中的胜出观测和匹配结果。不重新匹配，不覆盖 `mappingStatus` |
+
+两种结果都必须带上最终持久化的完整 `ObservedAmount`，其中包含匹配结果。不允许返回一个没有匹配结果的观测。
+
+调用顺序是：
+
+```text
+findByIdentity
+    |
+    +-- 已存在：返回原观测及匹配结果
+    |
+    +-- 不存在
+           |
+           +-- match
+           +-- persistObservation
+                  |
+                  +-- CREATED：返回本次持久化结果
+                  |
+                  +-- ALREADY_EXISTS：使用胜出方的持久化结果
+                         不重新匹配，不覆盖 mappingStatus
+```
+
+Pipeline 负责这个顺序。Worker 只装配端口实现。依赖方向仍按 ADR-0002：Pipeline 只依赖 `platform-common` 和 `platform-core`。不新增模块。
 
 `execute` 属于 Pipeline 对 Worker 暴露的入口，内部仍只调用 core 端口。
 
@@ -551,10 +595,14 @@ RETRY_WAITING -> RUNNING
 | E2E-041 | 同一标准化逻辑身份重试 | 复用原 `normalizationRuleVersion` 和 `conversionRuleVersion`。已有结果直接返回 | 否 | 未执行 |
 | E2E-042 | 已固定的规则版本不可用 | 阻断并报告。不换成最新版本 | 是 | 未执行。当前也没有已分配版本 |
 | E2E-043 | 标准化或转换规则版本变化 | 新逻辑结果。旧结果和原观测保留。旧任务重试不改用新版本 | 否 | 未执行。版本号尚未分配 |
-| E2E-044 | 两个 Worker 同时处理同一观测身份 | 最终只有一条有效观测和唯一的匹配结果 | 否 | 未执行。物理索引未实现 |
-| E2E-045 | 并发中后写入的一方 | 读取并复用已持久化的观测和匹配结果。不再匹配 | 否 | 未执行 |
+| E2E-044 | 两个 Worker 同时处理同一观测身份 | 一个 `CREATED`，另一个 `ALREADY_EXISTS`。最终只有一条有效观测和唯一的匹配结果 | 否 | 未执行。物理索引未实现 |
+| E2E-045 | `persistObservation` 返回 `ALREADY_EXISTS` | 返回竞争胜出方的完整观测和匹配结果。不重新匹配，不覆盖 `mappingStatus` | 否 | 未执行 |
 | E2E-046 | 已有观测后重试 | 返回原观测和原匹配结果。不重新匹配 | 否 | 未执行 |
-| E2E-047 | 不转换，`conversionRuleVersion` 为空 | 不把 `NO_CONVERT` 或任何虚构版本写入该列。未分配的标准化版本保持未分配 | 否 | 未执行 |
+| E2E-047 | 不转换，`conversionRuleVersion` 为空 | 逻辑空值 NULL。不把 `NO_CONVERT` 或任何虚构版本写入该列。未分配的标准化版本保持未分配 | 否 | 未执行 |
+| E2E-048 | 版本固定记录已保存，标准化结果尚未写出时故障 | 重试读取原固定版本。不重新选择最新规则 | 否 | 未执行 |
+| E2E-049 | 旧任务已有版本固定记录后，规则又发布了新版本 | 该任务重试仍用原固定版本。新版本不替换它 | 否 | 未执行。当前没有已分配版本 |
+| E2E-050 | 版本固定记录持久化失败 | 不写出 `NormalizedAmount`。不能把内存中的版本当成已固定 | 否 | 未执行 |
+| E2E-051 | 并发持久化结束 | 只有一个最终有效观测。不存在没有匹配结果的有效观测，也不存在两个有效 `mappingStatus` | 否 | 未执行 |
 
 进入实现之后还需要单元测试、端口装配测试、幂等并发测试和故障重试测试。那些测试现在也不存在。
 
@@ -613,5 +661,9 @@ RETRY_WAITING -> RUNNING
 ## 18. 第二轮修订
 
 第二轮架构审查整改完成，待第三轮架构审查。本轮增加 `ALL_FIELDS_FAILED`，写明标准化与转换版本在写出前固定并供重试复用，并把查询、匹配和持久化分成三项职责。没有正式冻结。没有新增 `mappingStatus`。没有设计 DDL。E2E 测试都没有执行。
+
+## 19. 第三轮修订
+
+第三轮架构审查整改完成，待第四轮架构审查。本轮规定版本固定记录必须先于标准化结果保存，并让 `persistObservation` 用 `CREATED` 或 `ALREADY_EXISTS` 返回最终观测和匹配结果。没有正式冻结。没有新增 `mappingStatus`。没有设计 DDL。E2E 测试都没有执行。
 
 本文没有修改 06-03-01、06-03-02-01、06-03-02-02、06-03-02-03、06-03-03-01、06-03-03-02、06-03-03-03、06-03-03-04 和 06-03-03-05。没有 Java 实现，没有 DDL，没有新表，没有新模块。
