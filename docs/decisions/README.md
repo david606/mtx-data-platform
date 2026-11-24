@@ -7,3 +7,4 @@
 | [0001](0001-technology-baseline.md) | 初始化技术基线 | 历史决策。版本基线仍有效，模块结构不再作为 V2 目标 |
 | [0002](0002-v2-module-architecture.md) | V2 十模块结构 | 已接受。V2 模块结构以本决策为准 |
 | [0003](0003-unmapped-conflict-observation.md) | 未识别金额与冲突金额的观测处理 | 已接受。不替代 06-03-03-05 的字段和窗口细节 |
+| [0004](0004-external-contract-version-resolution.md) | 外部契约版本解析与金额提取前置规则 | Proposed（提议中，尚未批准）。不替代三份冻结设计文档的现有条款 |
