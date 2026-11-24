@@ -11,7 +11,7 @@
 - [06-03-03-01 原始金额提取模型](06-03-03-01%20MTX%20Data%20Platform%20V2%20原始金额提取模型设计.md)
 - [06-03-03-02 金额观测记录模型](06-03-03-02%20MTX%20Data%20Platform%20V2%20金额观测记录模型设计.md)
 
-架构依据是 [ADR-0002](../../../decisions/0002-v2-module-architecture.md)。
+架构依据是 [ADR-0002](../../../decisions/0002-v2-module-architecture.md)、[ADR-0003](../../../decisions/0003-unmapped-conflict-observation.md) 和 [ADR-0004](../../../decisions/0004-external-contract-version-resolution.md)。契约版本解析以已接受的 ADR-0004 为准。匹配引擎不负责这次解析。
 
 文中的标记含义：
 
@@ -39,7 +39,7 @@
 下列差异已经写在冻结文档里。本文不修改那些文件，也不另造第三种执行状态。
 
 1. 06-03-01 写“只有 `ACTIVE` 能用于新观测。停用后的版本仍解释旧观测”。06-03-02-03 写：快照条目上的 `RETIRED` 只表示窗口已有右端点；`receivedAt` 落在该窗口内时仍然命中，执行状态按命中的那条映射写成 `MAPPED`。06-03-03-02 已按 06-03-02-03 执行。本文同样按 06-03-02-03 和 06-03-03-02 匹配历史窗口。`RETIRED` 命中不是把该类型重新批准，也不是允许计算。
-2. 外部版本号“未提供”对应零个或多个内部修订时，06-03-03-01 的提取结果是 `CONTRACT_VERSION_UNRESOLVED`，整份阻断，没有字段结果。06-03-02-03 第 8 节第 2 步写的是 `UNMAPPED`。本文的输入要求契约版本已经确定。提取已经阻断时，本引擎不启动，因此不在这一步再生成 `UNMAPPED` 观测。
+2. 零个或多个对应修订的统一规则以已接受的 ADR-0004 为准：返回 `CONTRACT_VERSION_UNRESOLVED`，不产生字段结果，不产生 `ObservedAmount`，不降级成 `UNMAPPED`，匹配引擎不启动。本任务不修改 06-03-02-03，也不把该文件的修订算作本轮完成的工作。核对当前文件时，其第 8 节第 2 步和 06-03-03-01 第 8、9 节已经是这一结果，不再把零个或多个写成 `UNMAPPED`。本文与这两份当前条款对齐。06-03-03-06 仍保留“尚未统一”的暂缓句。本文不修改它，也不把那句暂缓当成匹配引擎可以补造 `UNMAPPED` 的许可。
 3. 06-03-02-03 第 8 节第 6 步写明：同时命中映射和冲突，或命中两条映射，任务失败。它没有单独写“同时命中两条冲突决定”。06-03-03-02 已把后一种定为快照完整性异常，任务失败，不降成 `UNMAPPED`。本文沿用 06-03-03-02。发布阶段的 `WINDOW_OVERLAP` 不改变。
 
 ## 3. 匹配模型
@@ -64,10 +64,10 @@
 
 | 输入 | 来源 | 作用 |
 | --- | --- | --- |
-| `snapshotId` | 任务上已经固定的值 | 只装载这一份快照 |
-| `contractVersionId` | 提取已经确定，并且出现在该快照的契约条目中 | 选择这一版契约下的条目 |
-| `contractBodySha256` | 提取校验通过的版本行哈希 | 与快照中的版本行再次核对。不一致则任务失败 |
-| `AmountExtractionResult` | 06-03-03-01 的输出 | 只消费 `payloadCode = OK` 且 `fieldCode = OK` 的字段 |
+| `snapshotId` | 任务上已经固定的值 | 只装载这一份快照。匹配不改选最新快照 |
+| `contractVersionId` | 上游已经唯一确定的内部版本 ID | 只读取这一版契约下的条目。匹配不再用外部版本号选择修订，也不自行选择最新契约版本 |
+| `contractBodySha256` | 上游已经校验通过的正文哈希 | 防御性再核对。不一致时不进入窗口算法，不写成 `UNMAPPED` |
+| `AmountExtractionResult` | 契约解析成功并完成提取后的 06-03-03-01 输出 | 只消费 `payloadCode = OK` 且 `fieldCode = OK` 的字段 |
 | `AmountSource` | 接入端已经保存的来源 | 提供 `platform`、`sourceInterface`、`sourceMessageType`、`receivedAt`、`rawPayloadRef`、`ingressMode` |
 | `receivedAt` | `AmountSource` | 唯一参加窗口判断的业务时间 |
 
@@ -77,7 +77,9 @@
 
 ### 3.3 匹配上下文
 
-上下文是一次调用中只读的装载结果：通过 06-03-02-03 第 14 节校验的那一份快照，加上本次提取结果和 `receivedAt`。上下文不包含 `processedAt`。处理时间只记日志。
+上下文只能在下面条件全部满足后建立：`snapshotId` 已固定；`contractVersionId` 已唯一确定；该版本属于当前快照；契约家族身份和 `contractId` 已通过；外部版本号一致；正文哈希已通过；提取 `payloadCode = OK`。上下文是这次调用中只读的装载结果，加上本次提取结果和 `receivedAt`。它不包含 `processedAt`。处理时间只记日志。
+
+`CONTRACT_VERSION_UNRESOLVED`、`CONTRACT_IDENTITY_MISMATCH` 和 `CONTRACT_VERSION_HASH_MISMATCH` 属于上游契约解析或校验阻断。匹配引擎不启动，不把它们改写成 `UNMAPPED`。匹配可以对已经给出的快照上下文做一致性防御，但不得因此重新按外部版本号解析契约版本。
 
 装载未通过时没有匹配上下文。任务失败，不使用已经读到的部分条目。
 
@@ -90,7 +92,8 @@
 | 一条 `ObservedAmount`，`mappingStatus = MAPPED` | 该具体路径恰好命中一条映射，并且资格是 `ALLOWED_IF_CONTRACT_DEFINES` |
 | 一条 `ObservedAmount`，`mappingStatus = UNMAPPED` | 没有命中；或命中的版本资格是 `ALLOWED_AS_UNIDENTIFIED` |
 | 一条 `ObservedAmount`，`mappingStatus = CONFLICT` | 恰好命中一条冲突决定 |
-| 任务失败 | 快照装载失败、契约条目对不上、同一字段多重命中，或唯一映射的资格是 `NOT_UNTIL_CONFIRMED`、`DISALLOWED`、`CONFLICT_ONLY`。不写该字段的 `MAPPED`，不改读最新快照 |
+| 任务失败 | 快照装载失败、同一字段多重命中，或唯一映射的资格是 `NOT_UNTIL_CONFIRMED`、`DISALLOWED`、`CONFLICT_ONLY`。不写该字段的 `MAPPED`，不改读最新快照。上游契约解析阻断不是这里的匹配失败 |
+| 不调用匹配 | `CONTRACT_VERSION_UNRESOLVED`、`CONTRACT_IDENTITY_MISMATCH`、`CONTRACT_VERSION_HASH_MISMATCH`，或提取 `payloadCode` 不是 `OK`。不产生 `ObservedAmount`，不降级为 `UNMAPPED` |
 | 不写观测 | `fieldCode` 不是 `OK`。这不是任务失败 |
 
 `MAPPED` 只表示这次执行引用了哪一版映射。它不表示 `semanticStatus` 已经升级，不表示证据已经足够，也不表示可以进入 `AmountCalculation`。
@@ -137,12 +140,14 @@
 
 新到达的报文在任务第一次开始时固定当时最新且校验通过的快照。任务开始之后，即使发布了更新的快照，本次和本次重试仍使用原来的 `snapshotId`。
 
+匹配引擎不选择快照，也不选择契约版本，更不自行创建重放任务。确定性契约解析失败不能因重复重试或新快照发布而变成成功。临时读取失败且候选查找尚未完成时，允许原任务在原 `snapshotId` 下重试，不得记成 `CONTRACT_VERSION_UNRESOLVED`。新快照修正配置后的重新处理必须是显式重放任务。它是新任务，不覆盖旧观测。上一句“当时最新且校验通过”与 06-03-02-03 第 14 节“没有子批次的最新已发布快照”的措辞差异仍待决，本文不决定。
+
 ## 6. 匹配算法
 
-前置：06-03-02-03 第 14 节的快照装载已经通过。提取 `payloadCode = OK`。只对 `fieldCode = OK` 的具体路径执行下列步骤。
+前置：任务 `snapshotId` 已固定；上游已经唯一确定 `contractVersionId`，且它属于当前快照；契约家族身份、`contractId` 和外部版本号已通过；正文哈希已通过；06-03-02-03 第 14 节的快照装载已经通过；提取 `payloadCode = OK`。任一契约解析或提取前置校验失败时，不进入下列窗口算法。只对 `fieldCode = OK` 的具体路径执行下列步骤。
 
 1. 读取任务上的 `snapshotId`。不读取最新快照。
-2. 确认输入里的 `contractVersionId` 出现在该快照的契约条目中，正文哈希与条目和版本行一致。条目中没有，或哈希不一致：任务失败。不猜另一个修订。
+2. 防御性确认输入里已经确定的 `contractVersionId` 出现在该快照的契约条目中，正文哈希与条目和版本行一致。这一步不按外部版本号重新选择修订，也不改选最新契约版本。条目中没有时，上游阻断码仍是 `CONTRACT_VERSION_UNRESOLVED`。哈希不一致时，上游阻断码仍是 `CONTRACT_VERSION_HASH_MISMATCH`，不使用部分路径。家族身份、`contractId` 或外部版本号不一致时，上游阻断码仍是 `CONTRACT_IDENTITY_MISMATCH`。三种都不进入后续步骤，也不写成 `UNMAPPED`。
 3. 取出该契约版本、该具体路径的全部映射条目和全部冲突条目。`ACTIVE` 和 `RETIRED` 都保留。
 4. 保留 `effectiveFrom <= receivedAt`，且右端点为空或 `receivedAt < effectiveTo` 的条目。
 5. 恰好一条映射、零条冲突：读取该版本的 `mappingEligibility`。按下面五种分别处理，不用“不是 `ALLOWED_AS_UNIDENTIFIED` 就是 `MAPPED`”：
@@ -225,9 +230,16 @@ observationIdentity =
 app-worker 固定 snapshotId
         |
         v
-platform-pipeline 调用 core 提取端口
+契约版本解析与校验
         |
-        +-- payloadCode 不是 OK：记下阻断码，不调用匹配
+        +-- 确定性失败：任务阻断，不调用提取和匹配
+        |
+        +-- 临时读取失败：原任务使用原 snapshotId 重试
+        |
+        v
+原始金额提取
+        |
+        +-- payloadCode 不是 OK：不调用匹配
         |
         v
 platform-pipeline 调用 core 匹配端口
@@ -238,6 +250,8 @@ platform-transform 按第 6 节匹配
         v
 platform-writer 写出允许形成的观测
 ```
+
+Pipeline 仍只调用 `platform-core` 端口。它不依赖 Transform 的实现类。上面的解析与提取由 Worker 装配的实现完成，不新增模块。
 
 ## 10. 时序
 
@@ -250,6 +264,7 @@ Worker          Pipeline         Transform              Writer
   |                |                |                      |
   | 固定 snapshotId|                |                      |
   |--------------->|                |                      |
+  |                | 契约版本已唯一确定并校验通过          |
   |                | 提取，fieldCode = OK                  |
   |                |--------------->|                      |
   |                |                | 恰好一条映射窗口命中 |
@@ -305,7 +320,7 @@ CONFLICT，保留这一个 conflictDecisionId，proposedType 为空
 同一身份已有观测：返回原观测，不覆盖
 ```
 
-换用 V2 必须是另一次任务，固定另一个 `snapshotId`，然后新建观测。
+换用 V2 必须是另一次显式重放任务，固定另一个 `snapshotId`，然后新建观测。匹配引擎不创建这次任务。旧观测保持原样。
 
 ### 10.5 快照完整性异常
 
@@ -334,7 +349,11 @@ CONFLICT，保留这一个 conflictDecisionId，proposedType 为空
 | `PATH_NOT_UNIQUE` | 字段 | 不挑选节点，不形成 `RawAmountValue`，不形成观测。其他成功字段继续 |
 | `RAW_TEXT_UNRETAINABLE` | 字段 | 不保存截断字面量，不进入匹配，不形成正常观测。其他成功字段继续 |
 | 整份提取 `payloadCode` 不是 `OK` | 任务 | 匹配不启动，不生成观测 |
-| `contractVersionId` 不在该快照契约条目中，或正文哈希不一致 | 任务 | 失败。不猜修订，不改读最新快照 |
+| 契约版本无法唯一确定，或 `contractVersionId` 不属于当前快照 | 上游 | `CONTRACT_VERSION_UNRESOLVED`。不进入提取和匹配，不产生字段结果和 `ObservedAmount`，不写成 `UNMAPPED` |
+| 契约家族身份、`contractId` 或外部版本号不一致 | 上游 | `CONTRACT_IDENTITY_MISMATCH`。不进入路径提取和匹配 |
+| 正文哈希与封存值不一致 | 上游 | `CONTRACT_VERSION_HASH_MISMATCH`。不使用部分路径，不产生字段结果和 `ObservedAmount` |
+| 临时读取失败，候选查找尚未完成 | 原任务 | 使用原 `snapshotId` 重试。不记成 `CONTRACT_VERSION_UNRESOLVED`，不切换最新快照 |
+| 确定性解析失败后发布了新快照 | 原任务 | 仍然失败，不自动切换。重新处理必须是显式重放任务。匹配引擎不创建该任务 |
 | 快照不存在、条目数量不符、正文或决定哈希不符 | 任务 | 失败。不使用部分条目 |
 | 两条映射，或映射与冲突同时命中 | 任务 | 失败。不挑选，不降成 `UNMAPPED` |
 | 两条冲突决定 | 任务 | 失败，视为快照完整性异常。不任选决定，不降成 `UNMAPPED` |
@@ -372,6 +391,17 @@ CONFLICT，保留这一个 conflictDecisionId，proposedType 为空
 | T19 | 唯一映射命中，资格是 `NOT_UNTIL_CONFIRMED` | 任务失败，视为快照完整性异常。不形成该字段的 `MAPPED`，不降成 `UNMAPPED`，不切换快照 | 是 |
 | T20 | 唯一映射命中，资格是 `DISALLOWED` | 任务失败，视为快照完整性异常。不形成该字段的 `MAPPED`，不降成 `UNMAPPED`，不切换快照 | 是 |
 | T21 | 唯一映射命中，资格是 `CONFLICT_ONLY` | 任务失败，视为快照完整性异常。不形成该字段的 `MAPPED`，不降成 `UNMAPPED`，不切换快照 | 是 |
+| T22 | `contractVersionId` 属于当前快照，家族身份、外部版本号和正文哈希都通过，提取 `payloadCode = OK` | 进入提取和匹配。匹配不再用外部版本号选择修订。本行未执行 | 否 |
+| T23 | 版本表有该 `contractVersionId`，当前快照契约条目没有 | `CONTRACT_VERSION_UNRESOLVED`。不进入提取和匹配，无字段结果，无 `ObservedAmount`。本行未执行 | 是。阻断在上游 |
+| T24 | 明确外部版本号在当前固定快照内对应零个修订 | `CONTRACT_VERSION_UNRESOLVED`。不降级为 `UNMAPPED`。本行未执行 | 是。阻断在上游 |
+| T25 | 外部版本号为“未提供”，当前固定快照内恰好一个同为“未提供”的修订 | 采用该 `contractVersionId`。校验通过后才提取和匹配。本行未执行 | 否 |
+| T26 | 外部版本号为“未提供”，当前固定快照内对应零个或多个修订 | `CONTRACT_VERSION_UNRESOLVED`。不猜最新修订，不进入匹配。本行未执行 | 是。阻断在上游 |
+| T27 | 契约家族五段身份、`contractId` 或外部版本号与版本行不一致 | `CONTRACT_IDENTITY_MISMATCH`。不进入路径提取和匹配。本行未执行 | 是。阻断在上游 |
+| T28 | 契约正文与封存 `bodySha256` 不一致 | `CONTRACT_VERSION_HASH_MISMATCH`。不使用部分路径，无字段结果，无 `ObservedAmount`。本行未执行 | 是。阻断在上游 |
+| T29 | 快照或契约版本读取尚未完成，没有得出候选数量 | 原任务用原 `snapshotId` 重试。不记成 `CONTRACT_VERSION_UNRESOLVED`，不切换最新快照。本行未执行 | 否。本次读取未完成 |
+| T30 | 确定性解析失败之后发布了新快照 | 原任务仍失败，不自动切换 `snapshotId`。本行未执行 | 是 |
+| T31 | 新快照修正配置后显式重放同一原文 | 新任务、新身份，不覆盖旧观测。匹配引擎不创建该任务。本行未执行 | 否 |
+| T32 | 提取 `pathStatus = CONTRACT_PATHS_EMPTY`，`payloadCode = OK`，字段列表为空 | 提取成功。匹配成功结束，观测数为 0。这不是契约版本解析失败。本行未执行 | 否 |
 
 ## 13. 设计决策
 
@@ -389,7 +419,7 @@ CONFLICT，保留这一个 conflictDecisionId，proposedType 为空
 
 ## 14. 风险与待确认事项
 
-1. 第 2 节的三处上游差异没有在本文中消掉。要消掉必须先修订对应的冻结文档。
+1. 第 2 节第 1 点和第 3 点的上游差异仍在。第 2 点按 ADR-0004 以及当前 06-03-02-03、06-03-03-01 对齐。06-03-03-06 的“尚未统一”暂缓句还没有删除，本文不修改它。
 2. 一个路径多重命中导致任务失败时，同一任务中其他路径已经写出的观测是否一起撤销，上游没有存储事务。本文不规定。
 3. 06-03-02-03 第 14 节没有写加载后的资格防御。本文已在第 6 节第 5 步规定这三种资格使任务失败。上游原文没有改。同一任务中其他路径已经写出的观测是否一起撤销，仍见上一条。
 4. `observationId` 的生成算法、观测身份的字节编码和唯一索引仍未冻结。逻辑身份沿用 06-03-03-02。
@@ -413,6 +443,8 @@ CONFLICT，保留这一个 conflictDecisionId，proposedType 为空
 | Pipeline 不依赖 Transform 实现 | 第 9 节，符合 ADR-0002 |
 | 不把 `DRAFT` 写成生产映射 | 第 1、7、13 节 |
 | 不设计解析器版本体系 | 第 13、14 节 |
+| 契约版本解析先于提取和匹配 | 第 2、3、6、9、11 节。匹配不选择 `contractVersionId`，也不把上游阻断写成 `UNMAPPED` |
+| 原任务不换快照，显式重放不覆盖旧观测 | 第 5.2、10.4、11、12 节，符合 ADR-0003 与 ADR-0004 |
 
 本文没有修改 06-03-01、06-03-02-01、06-03-02-02、06-03-02-03、06-03-03-01 和 06-03-03-02。
 
@@ -427,3 +459,17 @@ CONFLICT，保留这一个 conflictDecisionId，proposedType 为空
 | 唯一映射命中后的资格默认分支 | 第 6 节第 5 步改为按五种 `mappingEligibility` 分别处理。只有 `ALLOWED_IF_CONTRACT_DEFINES` 是 `MAPPED`。`ALLOWED_AS_UNIDENTIFIED` 仍是 `UNMAPPED`，并保留资格和类型编码。`NOT_UNTIL_CONFIRMED`、`DISALLOWED`、`CONFLICT_ONLY` 是快照完整性异常，任务失败 |
 
 同步修订了第 3.4、8、10.5、11、12、14、15 节，避免其他章节仍写“不是未识别资格就是 `MAPPED`”。增加 T19、T20、T21。T14 保留。窗口算法、观测身份、模块依赖和 Pipeline 顺序没有改。没有新增状态码、领域对象、表或 Java 类。
+
+## 17. 第二轮修订记录
+
+本轮只修订本文，同步已接受的 ADR-0004。不修改 ADR，也不修改 06-03-02-03、06-03-03-01、06-03-03-02 和 06-03-03-06。
+
+| 内容 | 位置 |
+| --- | --- |
+| 契约版本解析先于金额提取和匹配 | 第 2、6、9、10 节 |
+| 匹配引擎只消费已经确定的 `contractVersionId` | 第 3.2、3.3、6 节 |
+| 上游阻断不降级为 `UNMAPPED` | 第 3.4、11 节 |
+| 临时读取失败与确定性解析失败分开，显式重放不覆盖旧观测 | 第 5.2、10.4、11 节 |
+| 补充 T22 至 T32 | 第 12 节。这些行都写明未执行 |
+
+窗口算法、资格、冲突、观测身份和模块边界没有改。没有新增错误码、执行状态、领域对象、表或 Java 类。没有执行这些验收场景。
