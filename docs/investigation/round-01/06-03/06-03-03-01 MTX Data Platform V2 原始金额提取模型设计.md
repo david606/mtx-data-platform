@@ -333,6 +333,8 @@ trade-flow 怎样读取字段，只说明旧系统行为，不是平台官方契
 
 第二轮审查发现 `payloadFormat` 还没有进入 06-03-02-03 的字段和 v3 哈希，路径结果也还合在 `CONTRACT_PATHS_ABSENT` 里。这两份文档一起修正。这是设计纠错。没有修改 06-03-01、06-03-02-01 和 06-03-02-02，也没有激活任何类型或映射。
 
+第三轮审查核对后，提取模型与 06-03-02-03 的当前定义一致，本文件不再改字段或状态码。`payloadFormat` 已经进入 `contract-version-v3` 正文。材料是否相同由 `contract-material-v1` 判断。`sourceRevision` 在正文哈希计算之前分配。路径状态仍是 `CONTRACT_PATHS_UNDEFINED`、`CONTRACT_PATHS_EMPTY`、`CONTRACT_PATH_INTEGRITY_FAILED`、`CONTRACT_PATHS_CORRUPT` 和 `CONTRACT_PATHS_READY`，与 06-03-02-03 相同。v2 历史哈希保持原定义。06-03-02-03 本轮另将 `ck_contract_payload_shape` 改为在写入时拒绝 v3 的空列和非法材料指纹。提取仍只读取已经通过该约束并完成路径分类的版本。
+
 ## 15. 设计决策记录
 
 | 决策 | 理由 | 没有采用的做法 |
@@ -355,3 +357,4 @@ trade-flow 怎样读取字段，只说明旧系统行为，不是平台官方契
 | 初稿 | 建立原始金额提取的职责、路径读取和与映射端口的边界 |
 | 第一轮审查 | 设计纠错。路径清单改为 `contract-version-v3` 正文。区分报文读取、字面量保留和后续数值校验。提取结果不单独落库 |
 | 第二轮审查 | 设计纠错。`payloadFormat` 进入 v3 正文哈希。路径结果拆成五种分类。完整性失败阻断整次提取。修订号的分配顺序改由 06-03-02-03 的材料指纹决定 |
+| 第三轮审查 | 与 06-03-02-03 对齐，不改提取模型。`payloadFormat` 已纳入 `contract-version-v3` 正文。`contract-material-v1` 已用于材料相同性判断。`sourceRevision` 在正文哈希计算前分配。路径状态分类与 06-03-02-03 保持一致。v2 历史哈希保持原定义 |

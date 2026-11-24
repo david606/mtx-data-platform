@@ -294,7 +294,7 @@ CREATE TABLE source_contract_version (
   payload_format VARCHAR(32) NULL,
   path_count INT NULL,
   publication_state VARCHAR(16) NOT NULL DEFAULT 'DRAFT',
-  material_sha256 CHAR(64) NULL,
+  material_sha256 VARCHAR(64) NULL,
   body_sha256 CHAR(64) NOT NULL,
   body_encoding VARCHAR(32) NOT NULL,
   row_version INT NOT NULL DEFAULT 1,
@@ -317,9 +317,13 @@ CREATE TABLE source_contract_version (
       AND path_count IS NULL
       AND material_sha256 IS NULL)
     OR (body_encoding = 'contract-version-v3'
-      AND payload_format IN ('JSON')
+      AND payload_format IS NOT NULL
+      AND payload_format = 'JSON'
+      AND path_count IS NOT NULL
       AND path_count >= 0
-      AND CHAR_LENGTH(material_sha256) = 64))
+      AND material_sha256 IS NOT NULL
+      AND CHAR_LENGTH(material_sha256) = 64
+      AND material_sha256 REGEXP '^[0-9a-f]{64}$'))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
 
 CREATE TABLE source_contract_amount_path (
@@ -594,7 +598,15 @@ CREATE TABLE amount_mapping_idempotency_request (
 
 创建冲突决定、审核冲突决定和发布冲突决定的聚合类型是 `CONFLICT_DECISION`，事件名分别是 `CREATE_CONFLICT_DECISION`、`REVIEW_CONFLICT` 和 `PUBLISH_CONFLICT`。
 
-`payload_format`、`path_count` 和 `material_sha256` 是契约版本上的建议列。v2 行这三列都为空。v3 行的 `payload_format` 只能是 `JSON`，`path_count` 大于或等于 0，`material_sha256` 是 64 位十六进制。MySQL 唯一索引把 NULL 看成互不相同，所以多条 v2 行可以同时让 `material_sha256` 为空。同一 `contract_id` 下，一个 v3 材料指纹只对应一行。
+`payload_format`、`path_count` 和 `material_sha256` 是契约版本上的建议列。`ck_contract_payload_shape` 在插入和更新时检查这三列，不等待 Worker 读取。MySQL 只在 CHECK 结果为 FALSE 时拒绝行；结果为 UNKNOWN 时放行。`IN`、`>=`、`CHAR_LENGTH(...) = 64` 和 `REGEXP` 遇到 NULL 都是 UNKNOWN，所以 v3 分支对每一列先写 `IS NOT NULL`，再写取值条件。v2 分支只使用 `IS NULL`，结果是 TRUE 或 FALSE。
+
+v2 行要求 `payload_format`、`path_count`、`material_sha256` 都为 NULL。三者有一个不是 NULL，v2 分支为 FALSE；编码也不是 v3，整条 CHECK 为 FALSE，插入或更新被拒绝。
+
+v3 行要求 `payload_format` 不是 NULL 且等于 `JSON`，`path_count` 不是 NULL 且大于或等于 0，`material_sha256` 不是 NULL、字符长度是 64，并且每个字符都属于 `0-9` 或 `a-f`。`XML`、大写十六进制、空字符串、长度不是 64 的字符串，以及任一列为 NULL，都使 v3 分支为 FALSE。
+
+`material_sha256` 使用 `VARCHAR(64)`。`CHAR(64)` 会用空格补足长度，短字符串的 `CHAR_LENGTH` 会变成 64，长度条件就会放行。`body_sha256` 仍是 `CHAR(64) NOT NULL`。本轮不改它的类型，也不改任何正文哈希字节。MySQL 唯一索引把 NULL 看成互不相同，所以多条 v2 行可以同时让 `material_sha256` 为空。同一 `contract_id` 下，一个非空材料指纹只对应一行。
+
+两层校验的分工如下。应用层在写库前检查请求，并返回 `PAYLOAD_FORMAT_UNKNOWN`、`AMOUNT_PATH_DUPLICATE`、`AMOUNT_PATH_INVALID` 或 `REQUEST_INVALID`。数据库约束不产生这些业务错误码；它负责在绕过接口的写入上直接回滚。路径语法、排序、重复、路径行数是否等于 `path_count`，以及正文哈希是否重算一致，都依赖路径表或整份编码。MySQL 的 CHECK 不能写子查询，这些规则由创建事务在写入时执行，Worker 读取时再执行一次。创建事务失败就整笔回滚，不留下三个扩展字段合法、路径行却残缺的版本。Worker 仍拒绝损坏快照，但不代替写入时的约束。第 16 节列出这个 CHECK 的允许和拒绝场景。
 
 `source_contract_amount_path` 保存 v3 路径列表的可查询投影。行数必须等于 `path_count`。这张表没有自己的哈希列。路径字节进入 `contract-version-v3` 和 `contract-material-v1`。版本封存后，不能再插入、修改或删除该版本的路径行。v2 版本一旦出现路径行，第 14 节把它定为 `CONTRACT_PATHS_CORRUPT`。
 
@@ -666,7 +678,7 @@ CREATE TABLE amount_mapping_idempotency_request (
 
 上表是 `request-v2` 的字段顺序，第一项版本名是字符串 `request-v2`。新的变更请求使用 `request-v3`：版本名改为 `request-v3`，其余事件的字段顺序与上表相同。只有 `CREATE_CONTRACT_VERSION` 在两个生效时间之后、`evidences` 之前增加字符串 `payloadFormat`，并在 `evidences` 之后增加 `amountPaths`。路径按 UTF-8 字节升序，元素是字符串，不是嵌套哈希。重复路径返回 `AMOUNT_PATH_DUPLICATE`。路径不符合第 14 节的语法时返回 `AMOUNT_PATH_INVALID`。`payloadFormat` 缺省、为空或为 null 时返回 `REQUEST_INVALID`。值不是 `JSON` 时返回 `PAYLOAD_FORMAT_UNKNOWN`。空路径列表表示这份契约版本声明没有金额路径。省略 `amountPaths` 返回 `REQUEST_INVALID`，调用方必须显式传列表。
 
-因此，第六轮记录的 `request-v2` 测试向量仍然只属于 `request-v2`。不能把那些字节改名为 `request-v3` 后继续使用原来的哈希。第七轮的 `request-v3` 示例还没有 `payloadFormat`，那组字节和哈希本轮废止，不再作为当前请求哈希。
+因此，第六轮记录的 `request-v2` 测试向量仍然只属于 `request-v2`。不能把那些字节改名为 `request-v3` 后继续使用原来的哈希。第七轮的 `request-v3` 示例还没有 `payloadFormat`，那组字节和哈希已在第八轮废止，不再作为当前请求哈希。
 
 ### 创建契约
 
@@ -995,7 +1007,7 @@ CREATE TABLE amount_mapping_idempotency_request (
 
 `payloadFormat` 是这份正文里的字符串，必须参加哈希。当前枚举只有 `JSON`，表示整份报文按 JSON 文本读取。要增加格式，先修订本设计，写明该格式怎样定位节点，再把新字符串加入枚举和表约束。编码名保持 `contract-version-v3`。新字符串改变字段内容，`materialSha256` 和 `bodySha256` 都会变；字段顺序不变，不为此新建 v4。未登记的字符串、空字符串、NULL，以及大小写不同的 `json`，都不能写成 v3 行。v2 行没有这个字段，列值保持空。空列表示 v2 编码不含格式，不把该行当成 `JSON`。
 
-已经按 v2 算出的哈希不能改用 v3 重算。第七轮示例里的 v3 字节还没有 `payloadFormat`，本轮废止，不作为当前 v3 定义。废止的正文哈希是 `8fcf8e33c4782176e79fee30c329a22f9180f5890b03507fea4b028e7df317ee` 和 `6fee099e591e9c029097fb16e3d14f5e350dd1f9e1316d5708b96e71240a85ec`。废止的创建请求哈希是 `af14c43c4d110c55fc2ec34470af446e7754cdc243725510402b8e02f0d0b9b5` 和 `21cb8dc0cd33fe2a5a4e54fec335701e14dd6b800f9169002abe542eb4804268`。这些值没有写入数据库。快照条目里保存的是 64 位哈希文本。`snapshot-v2` 的字段顺序不变，因为它只携带这个文本，不展开契约正文。新快照若引用 v3 契约，条目中的 `bodySha256` 就是包含 `payloadFormat` 和路径列表的 v3 哈希。旧快照若引用 v2 契约，仍按 v2 校验那一行。v2 行没有路径定义，校验不把它补成空清单。
+已经按 v2 算出的哈希不能改用 v3 重算。第七轮示例里的 v3 字节还没有 `payloadFormat`，已在第八轮废止，不作为当前 v3 定义。废止的正文哈希是 `8fcf8e33c4782176e79fee30c329a22f9180f5890b03507fea4b028e7df317ee` 和 `6fee099e591e9c029097fb16e3d14f5e350dd1f9e1316d5708b96e71240a85ec`。废止的创建请求哈希是 `af14c43c4d110c55fc2ec34470af446e7754cdc243725510402b8e02f0d0b9b5` 和 `21cb8dc0cd33fe2a5a4e54fec335701e14dd6b800f9169002abe542eb4804268`。这些值没有写入数据库。快照条目里保存的是 64 位哈希文本。`snapshot-v2` 的字段顺序不变，因为它只携带这个文本，不展开契约正文。新快照若引用 v3 契约，条目中的 `bodySha256` 就是包含 `payloadFormat` 和路径列表的 v3 哈希。旧快照若引用 v2 契约，仍按 v2 校验那一行。v2 行没有路径定义，校验不把它补成空清单。
 
 映射版本 `mapping-version-v2` 的值顺序：版本名、`mappingVersionId`、`mappingId`、`mappingVersion`、`contractVersionId`、`platform`、`fieldPath`、`sourceDataType`、`candidateAmountTypeCode`、`candidateDisposition`、`mappingEligibility`、`semanticStatus`、`evidenceStatus`、`unitConstraint`、`currencyConstraint`、`precisionConstraint`、`transformationPolicy`、`aggregationPolicy`、证据列表。审核状态不进入正文哈希。封存后审核状态也不允许再改。
 
@@ -1288,6 +1300,17 @@ Pipeline 的顺序不变：原文、原始金额、来源、按固定快照匹�
 | v2 没有路径定义 | v2 哈希与历史向量一致，路径行数为 0 | 分类 `CONTRACT_PATHS_UNDEFINED`。提取阻断。不补成空列表 |
 | 路径数量不符 | `path_count` 大于实际路径行数 | `CONTRACT_PATHS_CORRUPT`。不提取剩余路径 |
 | 路径未排序入库 | 库存哈希等于未排序向量 `013692f475dcb5b3188d4f5477dc1476b756cd893f59e7c5b7adb65b0fcf3bbd` | `CONTRACT_PATH_INTEGRITY_FAILED` |
+| v2 三个扩展字段均为 NULL | `body_encoding` 为 v2，`payload_format`、`path_count`、`material_sha256` 都是 NULL | `ck_contract_payload_shape` 允许 |
+| v2 任意扩展字段非 NULL | 三个扩展字段里至少一列有值 | 约束拒绝。包括只填 `JSON`、只填 `0` 或只填 64 位小写哈希 |
+| v3 `payload_format` 为 NULL | 其余 v3 列合法 | 约束拒绝。`IS NOT NULL` 为 FALSE，不把 NULL 比较留成 UNKNOWN |
+| v3 `payload_format` 为 `XML` | 路径和材料指纹列合法 | 约束拒绝 |
+| v3 `path_count` 为 NULL | 格式为 `JSON`，材料指纹合法 | 约束拒绝 |
+| v3 `path_count` 为 -1 | 格式为 `JSON`，材料指纹合法 | 约束拒绝 |
+| v3 `material_sha256` 为 NULL | 格式为 `JSON`，`path_count` 为 0 | 约束拒绝 |
+| v3 `material_sha256` 长度不足 | 值为 `abc`，或 63 个小写十六进制字符 | 约束拒绝。`CHAR_LENGTH` 不是 64，正则也不匹配 |
+| v3 `material_sha256` 含非十六进制字符 | 64 个字符，其中含 `g`，或含大写 `A` | 约束拒绝 |
+| 合法 v3、空路径 | `payload_format` 为 `JSON`，`path_count` 为 0，材料指纹是 64 位小写十六进制 | 约束允许。路径表行数由创建事务保持为 0 |
+| 合法 v3、非空路径 | `payload_format` 为 `JSON`，`path_count` 大于 0，材料指纹是 64 位小写十六进制 | 约束允许。路径表行数由创建事务保持等于 `path_count` |
 | 封存后修改路径 | 修改已封存版本的路径或 `payloadFormat` | 被拒绝。变化必须成为新版本 |
 | 封存后修改 | 修改已进入快照的契约版本 | 被拒绝 |
 | 多个“未提供” | 报文只有外部版本号 | `UNMAPPED`，不猜最新修订 |
@@ -1331,7 +1354,7 @@ Worker 只接受完整通过校验的 `MappingSnapshot`。候选依赖的契约�
 
 没有发现用配置状态绕过语义确认的路径。类型不是 `ACTIVE`、资格未确认或被禁止、冲突尚未形成已审核决定，都不能进入正式业务映射。
 
-这是第八轮修订稿，用来提交审查。它还不是冻结设计，也没有批准任何生产金额映射。本轮把 `payloadFormat` 纳入 v3 正文哈希，拆开契约路径的五种结果，并规定 `sourceRevision` 在正文哈希之前由材料指纹分配。
+这是第九轮修订稿，用来提交审查。它还不是冻结设计，也没有批准任何生产金额映射。第八轮已经把 `payloadFormat` 纳入 v3 正文哈希，并规定修订号先于正文哈希分配。本轮只收紧 `ck_contract_payload_shape`：v3 的空列在 MySQL 里不再因为 CHECK 结果是 UNKNOWN 而被写入。历史哈希字节没有改动。
 
 ## 19. 修订记录
 
@@ -1345,3 +1368,4 @@ Worker 只接受完整通过校验的 `MappingSnapshot`。候选依赖的契约�
 | 第六轮 | 固定每种变更请求的 `request-v2` 字段顺序、排序平局和二进制范围，并记录三组哈希测试向量 |
 | 第七轮 | 设计纠错。新增 `contract-version-v3` 和金额路径行，使路径清单进入契约正文哈希。`contract-version-v2` 的字节定义不改 |
 | 第八轮 | 设计纠错。`payloadFormat` 进入 v3 正文和 `contract-material-v1`。路径结果拆成五种分类。`sourceRevision` 先由材料指纹分配，再计算包含修订号的正文哈希。v2 历史哈希保持原字节 |
+| 第九轮 | 设计纠错。`ck_contract_payload_shape` 对 v3 先判断非空，再判断 `JSON`、非负路径数和 64 位小写十六进制材料指纹。`material_sha256` 改为 `VARCHAR(64)`，避免 `CHAR` 补空格后放行短字符串。写入时拒绝不合法行，不把这项留给 Worker |
