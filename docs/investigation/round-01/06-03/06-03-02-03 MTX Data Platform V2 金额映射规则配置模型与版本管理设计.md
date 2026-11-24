@@ -8,7 +8,7 @@
 - [06-03-02-01 标准金额类型](06-03-02-01%20MTX%20Data%20Platform%20V2%20标准金额类型体系与编码规范.md)
 - [06-03-02-02 四平台字段映射](06-03-02-02%20MTX%20Data%20Platform%20V2%20四平台原始金额字段与标准金额类型映射设计.md)
 
-架构依据是 [ADR-0002](../../../decisions/0002-v2-module-architecture.md) 和 [调度边界](../../../architecture/scheduling.md)。
+架构依据是 [ADR-0002](../../../decisions/0002-v2-module-architecture.md)、[ADR-0003](../../../decisions/0003-unmapped-conflict-observation.md)、[ADR-0004](../../../decisions/0004-external-contract-version-resolution.md) 和 [调度边界](../../../architecture/scheduling.md)。契约版本解析以已接受的 ADR-0004 为准。
 
 ## 1. 设计目标与范围
 
@@ -99,7 +99,7 @@
 
 这是设计纠错，不是另一套提取产品。金额路径清单和 `payloadFormat` 都属于契约版本正文。`contract-version-v2` 的字段顺序不包含路径，也不包含 `payloadFormat`，这个定义保持不变。新的契约版本用 `contract-version-v3` 把这两项算进正文哈希。没有单独的提取档案，也不为提取再做一次发布。
 
-没有消息类型时写入空字符串。报文若只带“未提供”，而该家族在这份快照里有多个内部修订，Worker 不猜测，结果是 `UNMAPPED`。接入记录必须尽量带上 `contractVersionId`。
+没有消息类型时写入空字符串。接入记录必须尽量带上 `contractVersionId`。运行时解析见第 8 节第 2 步：外部版本号无论是明确版本还是“未提供”，都只在任务已经固定的快照内判断对应修订是否恰好一个。恰好一个才确定 `contractVersionId`。零个或多个返回 `CONTRACT_VERSION_UNRESOLVED`，阻断，不产生字段结果和 `ObservedAmount`。Worker 不猜测最新修订，也不把尚未解析的契约版本写成 `UNMAPPED`。
 
 ## 5. AmountMapping 配置模型
 
@@ -187,13 +187,15 @@ Worker 只读任务固定的快照。接收时间落在冲突条目窗口内时�
 匹配算法：
 
 1. 读取任务上的 `snapshotId`。不读取最新快照，也不使用 `processedAt`。
-2. 用报文中的 `contractVersionId` 定位契约版本。只有外部版本号时，仅当这份快照里该家族恰好有一个对应修订才采用。零个或多个都得到 `UNMAPPED`。
+2. 在第 1 步读到的 `snapshotId` 内解析契约版本。这一步发生在金额路径提取之前。接入端给出 `contractVersionId` 时直接采用该值，不再用外部版本号在多个修订中选择。没有给出时，按契约家族和外部版本号查找；外部版本号为“未提供”时，只与同为“未提供”的修订比较。恰好一个对应修订才确定 `contractVersionId`，随后校验正文并进入路径提取。零个或多个都返回 `CONTRACT_VERSION_UNRESOLVED`，阻断，不产生字段结果，不产生 `ObservedAmount`，也不写成 `UNMAPPED`。不猜测最新修订。候选不属于本快照契约条目时，同样是 `CONTRACT_VERSION_UNRESOLVED`。家族身份、`contractId` 或外部版本号字符串与版本行不一致时，是 `CONTRACT_IDENTITY_MISMATCH`。正文哈希不符时，是 `CONTRACT_VERSION_HASH_MISMATCH`。这三种都不进入路径提取。
 3. 在该快照中取出这个契约版本和字段的全部映射条目、全部冲突条目。`ACTIVE` 和 `RETIRED` 都参加，不把 `RETIRED` 滤掉。
 4. 保留 `effectiveFrom <= receivedAt` 且右端点为空或 `receivedAt < effectiveTo` 的条目。
-5. 命中一条映射时，使用该 `mappingVersionId`，执行状态是 `MAPPED`。命中一条冲突决定时，执行状态是 `CONFLICT`。都没有则是 `UNMAPPED`。
+5. 只有第 2 步已经确定契约版本并且路径提取得到具体字段后，才做本步。命中一条映射时，使用该 `mappingVersionId`，执行状态是 `MAPPED`。命中一条冲突决定时，执行状态是 `CONFLICT`。都没有则是 `UNMAPPED`。这里的 `UNMAPPED` 是字段映射未命中，不是契约版本未解析。
 6. 同时命中映射和冲突，或命中两条映射，说明快照违反了发布检查。任务失败，不擅自选一条。
 
 已经开始的任务继续使用任务上的 `snapshotId`。新到达的迟到报文在第一次开始时固定当时最新的快照，再用自己的 `receivedAt` 选择窗口。当前快照里已经标成 `RETIRED` 的历史窗口仍然参加匹配，处理时间不参加。
+
+原任务重试继续使用该任务已经固定的 `snapshotId`。确定性解析失败不得因反复重试而变成成功，也不得因此改读最新快照。修正配置并发布新快照后，重新处理已保存的原始报文必须创建显式重放任务。显式重放是新任务，不复用原任务的任务身份和幂等键。新任务的观测遵守 ADR-0003，不覆盖原任务已经写下的观测。观测身份仍是 `rawPayloadRef + snapshotId + contractVersionId + fieldPath`。本段不改变上一句和本文件第 14 节的快照选择措辞。第 8 节与第 14 节对最新快照的用词差异，以及校验失败时能否跳过该快照，仍是 ADR-0004 留下的待决事项，本文不决定。
 
 发布事务对同一契约版本、同一字段的映射窗口和冲突窗口做一次排序检查。后一段的起点若早于前一段的终点，或者前一段没有终点而又存在后一段，就拒绝整笔发布。相邻窗口允许首尾相接，因为右端点不属于前一段。
 
@@ -1260,7 +1262,7 @@ Worker 只按任务上的 `snapshotId` 装载。任何一步失败都停止任�
 5. 每条契约条目都能读到已封存契约版本。按该行 `body_encoding` 选择 v2 或 v3 重算，结果必须等于条目和版本行上的 `bodySha256`。不能换一种编码再试。然后执行本节的路径分类。`CONTRACT_PATHS_UNDEFINED` 表示 v2 没有路径定义，这行仍可作为历史契约条目；提取阶段会阻断，快照装载本身不因此失败。`CONTRACT_PATHS_READY` 和 `CONTRACT_PATHS_EMPTY` 通过。`CONTRACT_PATHS_CORRUPT`、`CONTRACT_PATH_INTEGRITY_FAILED` 和 `CONTRACT_VERSION_HASH_MISMATCH` 使本任务失败。失败后不使用已经读到的部分路径。
 6. 每条映射条目都能读到已封存映射版本，重算结果必须同时等于条目和版本行上的 `bodySha256`。
 7. 每条冲突条目都能读到已封存决定。候选至少两条。每条候选都能读到已封存映射版本，版本重算哈希必须等于 `candidateBodySha256`，也必须等于版本行上的 `bodySha256`。决定按 `conflict-decision-v2` 重算后，必须等于决定行和冲突条目上的 `bodySha256`。
-8. 映射条目、冲突条目、冲突决定和候选映射引用的契约版本，都必须出现在该快照的契约条目中。Worker 从这些契约条目取得 `contractVersionId`，再读取对应正文。条目里没有的契约版本，即使版本表里还在，也不能拿来执行。
+8. 映射条目、冲突条目、冲突决定和候选映射引用的契约版本，都必须出现在该快照的契约条目中。Worker 从这些契约条目取得 `contractVersionId`，再读取对应正文。条目里没有的契约版本，即使版本表里还在，也不能拿来执行，结果是 `CONTRACT_VERSION_UNRESOLVED`，不写成 `UNMAPPED`。
 
 通过之后才允许按第 8 节匹配。校验失败的任务不能改用另一份快照继续。
 
@@ -1313,10 +1315,13 @@ Pipeline 的顺序不变：原文、原始金额、来源、按固定快照匹�
 | 合法 v3、非空路径 | `payload_format` 为 `JSON`，`path_count` 大于 0，材料指纹是 64 位小写十六进制 | 约束允许。路径表行数由创建事务保持等于 `path_count` |
 | 封存后修改路径 | 修改已封存版本的路径或 `payloadFormat` | 被拒绝。变化必须成为新版本 |
 | 封存后修改 | 修改已进入快照的契约版本 | 被拒绝 |
-| 多个“未提供” | 报文只有外部版本号 | `UNMAPPED`，不猜最新修订 |
+| 恰好一个修订 | 外部版本号或“未提供”在当前固定快照内恰好一个对应修订 | 确定 `contractVersionId`。正文校验通过后进入路径提取。本行未执行 |
+| 零个修订 | 外部版本号在当前固定快照内没有对应修订 | `CONTRACT_VERSION_UNRESOLVED`。阻断，无字段结果，无 `ObservedAmount`，不写成 `UNMAPPED`。本行未执行 |
+| 多个“未提供” | 报文只有外部版本号，当前固定快照内对应修订多于一个 | `CONTRACT_VERSION_UNRESOLVED`。阻断，不猜最新修订，无字段结果，无 `ObservedAmount`，不写成 `UNMAPPED`。本行未执行 |
 | 目录变化 | 新目录把类型改为 `ACTIVE` 后发布新快照 | 旧快照仍指向旧目录，类型资格不变 |
 | 目录数量 | 条目数和 `itemCount` 不一致 | 封存失败；已封存的目录被改少时 Worker 拒绝 |
-| 重试 | 新快照已发布 | 重试仍用原 `snapshotId` 和原目录版本 |
+| 重试 | 新快照已发布 | 原任务仍用原 `snapshotId` 和原目录版本。确定性解析失败不因此恢复，也不改读新快照。本行未执行 |
+| 显式重放 | 修正配置并发布新快照后重新处理原报文 | 必须是新任务，不复用原任务身份和幂等键。按 ADR-0003 另建观测，不覆盖历史观测。观测身份不变。本行未执行 |
 | 快照损坏 | 删除一条候选、证据或目录条目 | `SNAPSHOT_INTEGRITY_FAILED`，不改读最新配置，也不自动修复 |
 | JSON 字段顺序 | 第一组创建契约，只改变 JSON 字段先后 | 字节和 SHA-256 仍是 `36cff941ba280ad6a2b9d2d88ee60525e177af01e5842e804f004fefe816463d` |
 | 集合输入顺序 | 第二组、第三组按相反顺序提交集合 | 规范哈希仍分别是 `ee7a6057b3c9df84a1c38b6993ce0b8ca92eb4544b44271172241495b24a1d71` 和 `c34a9479a0c2c56156fe77779568434750ac99aeaa4bbf4ba9e7074c9ebd9919` |
@@ -1346,7 +1351,7 @@ MySQL、账号体系和第一份可发布的类型目录都还没有接受。本
 
 ## 18. 设计结论
 
-同一份快照可以保留同一字段的多个不重叠窗口。迟到报文按接收时间命中其中的历史映射，包括已经标成 `RETIRED` 的窗口。冲突决定保存候选版本号和正文哈希，并在发布时封存候选版本，因此历史决定可以还原当时比较过的映射正文。官方没有版本号时，用 `sourceRevision` 和材料指纹管理材料修订。正文哈希在修订号分配之后计算，并包含 v3 的 `payloadFormat` 与路径列表。类型目录版本写在发布批次上，目录自己记录条目数量和指纹。
+同一份快照可以保留同一字段的多个不重叠窗口。迟到报文按接收时间命中其中的历史映射，包括已经标成 `RETIRED` 的窗口。冲突决定保存候选版本号和正文哈希，并在发布时封存候选版本，因此历史决定可以还原当时比较过的映射正文。官方没有版本号时，用 `sourceRevision` 和材料指纹管理材料修订。运行时仍须按第 8 节第 2 步在固定快照内唯一确定 `contractVersionId`，不能把零个或多个修订写成 `UNMAPPED`。正文哈希在修订号分配之后计算，并包含 v3 的 `payloadFormat` 与路径列表。类型目录版本写在发布批次上，目录自己记录条目数量和指纹。
 
 Worker 只接受完整通过校验的 `MappingSnapshot`。候选依赖的契约版本必须已经在该快照的契约条目里。任一数量、正文或哈希对不上，就停止该任务。它不改读最新配置，也不修复快照。
 
@@ -1369,3 +1374,4 @@ Worker 只接受完整通过校验的 `MappingSnapshot`。候选依赖的契约�
 | 第七轮 | 设计纠错。新增 `contract-version-v3` 和金额路径行，使路径清单进入契约正文哈希。`contract-version-v2` 的字节定义不改 |
 | 第八轮 | 设计纠错。`payloadFormat` 进入 v3 正文和 `contract-material-v1`。路径结果拆成五种分类。`sourceRevision` 先由材料指纹分配，再计算包含修订号的正文哈希。v2 历史哈希保持原字节 |
 | 第九轮 | 设计纠错。`ck_contract_payload_shape` 对 v3 先判断非空，再判断 `JSON`、非负路径数和 64 位小写十六进制材料指纹。`material_sha256` 改为 `VARCHAR(64)`，避免 `CHAR` 补空格后放行短字符串。写入时拒绝不合法行，不把这项留给 Worker |
+| 第十轮 | 按已接受的 ADR-0004 修订契约版本解析。零个或多个对应修订改为 `CONTRACT_VERSION_UNRESOLVED` 并阻断，不再写成 `UNMAPPED`。原任务重试不换 `snapshotId`。新快照上的重新处理改为显式重放。第 8 节与第 14 节的快照选择措辞差异未决。本节测试未执行 |
