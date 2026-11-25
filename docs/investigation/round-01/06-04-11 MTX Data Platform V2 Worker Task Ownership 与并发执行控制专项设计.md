@@ -6,6 +6,8 @@
 
 第七轮的基线是 `b5abafae71f790a6d0902dc24667e441188ad7e7`。它只处理审查报告 06-04-13 的 R-01、R-02 和 R-03：阻断仲裁只保留第 8 节这一套，创建时代次为 0，到期接管有一条候选调用链。没有执行 SQL，没有引入 Quartz，也没有关闭 IR-02、IR-03、IR-07、IR-09 或 IR-21。
 
+第八轮的基线是 `0ee874896304436f47209bac04af8122b6d6ad12`。它只闭合复审报告 06-04-14 的 F-01 至 F-04：提交前读回实际代次，补齐响应丢失后的重读，用领取前状态判断取代行数，并写明执行权端口的结果和扫描失败分类。没有执行 SQL，没有引入 Quartz，没有创建 ADR，也没有关闭 IR-02、IR-03、IR-07 或 IR-09。
+
 ## 1. 审查问题
 
 | 编号 | 第一轮缺陷 | 第二轮选择 |
@@ -152,11 +154,12 @@
 
 ## 5. 领取事务
 
-一个显式事务内：
+一个显式事务内，按第 5.1 节的十一步执行。概要是：
 
-1. 条件更新任务行。代次加一，写下 Worker 实例和用 `NOW()` 计算的到期时刻。`PENDING` 或 `RETRY_WAITING` 改为 `RUNNING`。已经是 `RUNNING` 时保持 `RUNNING`。创建时的代次是 0，首次领取得到 1。以后每次成功领取都从已提交整数加一。0 不是执行权，NULL 不允许，加一不得回绕。
-2. 插入 `OPEN`、`CURRENT` 的新尝试。
-3. 把上一代 `OPEN` 的尝试改为 `INTERRUPTED`、`SUPERSEDED`。
+1. 锁住任务行后，先保存领取前的 `status`、代次，以及当时的 `CURRENT` 尝试标识和状态。随后的行数检查只用这些保存值。
+2. 条件更新任务行。代次加一，写下 Worker 实例和用 `NOW()` 计算的到期时刻。`PENDING` 或 `RETRY_WAITING` 改为 `RUNNING`。已经是 `RUNNING` 时保持 `RUNNING`。创建时的代次是 0，首次领取得到 1。以后每次成功领取都从已提交整数加一。0 不是执行权。只有本事务提交成功，并且读回的代次大于 0，才形成新的执行权。
+3. 在同一事务读回任务上的实际代次。新尝试只写入这个读回值。
+4. 按领取前状态取代旧尝试，再检查影响行数。然后提交。任一步不符合预期，整笔回滚。
 
 `WHERE` 要求 `status` 是 `PENDING` 或 `RETRY_WAITING`，或者 `status` 是 `RUNNING` 且到期时刻不晚于这句语句的 `NOW()`。已登记的有效阻断保留，领取语句不把它改回空。`status` 已经是终态值，则改变行数为 0，不创建尝试。
 
@@ -197,21 +200,25 @@
 
 `PENDING` 或 `RETRY_WAITING` 上不存在 `OPEN` / `CURRENT`。这两类领取的取代语句必须影响 0 行。`RUNNING` 且租约已到期时，必须恰好把一条代次等于旧值的 `OPEN` / `CURRENT` 改成 `INTERRUPTED` / `SUPERSEDED`。行数不符则回滚。
 
-下面是逻辑伪 SQL，不是已执行语句，也不是 DDL。到期时长仍未选定，所以不写秒数。`:workerInstanceId` 只是审计属性。
+列类型尚未选定，本轮不写最大值，也不假设某种 `sql_mode` 会报错或会截断。数据库若不能保存递增结果，可能是语句失败，也可能是保存后的值不等于预期新代次。两种都视为本次领取失败并整笔回滚。不得用负数、NULL、回绕或截断后的值继续插入尝试。列类型和 SQL 模式选定后，必须在 MySQL 8.0.46 上验证溢出行为。本轮没有做这次验证。
+
+领取前状态与取代行数：
+
+| 领取前 `status` | 旧尝试 | 取代语句必须影响的行数 |
+| --- | --- | --- |
+| `PENDING` | 没有 `CURRENT` | 0。不得把任何行改成 `SUPERSEDED` |
+| `RETRY_WAITING` | 历史行是 `FAILED` / `RELEASED`，不取代 | 0。`WHERE` 只匹配 `OPEN` / `CURRENT`，因此不会改到这些历史行 |
+| `RUNNING` 且租约已到期 | 一条 `OPEN` / `CURRENT`，代次等于领取前的值 | 1。必须是锁定时保存的那条尝试 |
+
+下面是逻辑步骤和伪 SQL，不是已执行语句，也不是 DDL。到期时长仍未选定，所以不写秒数。`:workerInstanceId` 只是审计属性。关键分支写在步骤里，不靠注释单独保证。
+
+1. `START TRANSACTION`。
+2. `SELECT ... FOR UPDATE` 锁定任务行。
+3. 保存 `observedStatus`、`observedGeneration`、`observedAttemptId`。有 `CURRENT` 时同时保存它的执行结果和执行权。没有则这两个保存值为空。
+4. 领取条件不成立则 `ROLLBACK`。条件是：`observedGeneration` 为大于等于 0 的整数，且 `observedStatus` 为 `PENDING` 或 `RETRY_WAITING`，或为 `RUNNING` 且到期时刻不晚于 `NOW()`。已是终态、代次为 NULL、或 `RUNNING` 但租约未到期，都在这里回滚，不执行更新。
+5. 条件更新任务行。协议要求 MySQL 实际改变行数是 1。语句失败或改变行数不是 1，则 `ROLLBACK`，不插入尝试。JDBC 把该返回值报成改变行数还是匹配行数仍未验证。代次是否真的增加，由下一步读回决定，不单靠这个行数。
 
 ```sql
-START TRANSACTION;
-
-SELECT status, execution_generation, lease_expiry, effective_block_id
-FROM task
-WHERE task_id = :taskId
-FOR UPDATE;
-
--- 仅当读到的代次是大于等于 0 的整数，
--- 且 status 为 PENDING 或 RETRY_WAITING，
--- 或 status 为 RUNNING 且 lease_expiry <= NOW()。
--- 否则 ROLLBACK，已提交代次不变。
-
 UPDATE task
 SET execution_generation = execution_generation + 1,
     worker_instance_id = :workerInstanceId,
@@ -223,21 +230,31 @@ WHERE task_id = :taskId
         status IN ('PENDING', 'RETRY_WAITING')
         OR (status = 'RUNNING' AND lease_expiry <= NOW())
       );
+```
 
--- MySQL 8.0 的 UPDATE 只把实际变化的行计入返回值，见 15.2.17。
--- 协议要求这个返回值是 1。不是 1 则 ROLLBACK，不插入尝试。
--- JDBC 把该返回值报成改变行数还是匹配行数，尚未验证，仍是未决项。
+6. 同一事务读回任务行上的实际代次，记为 `actualGeneration`。它必须严格等于领取前代次加一，并且大于 0。读回失败、读到 NULL、负数、0，或与该预期不等，都 `ROLLBACK`。这里不使用另一个未经读回的调用方计算值作为尝试代次。
 
+```sql
+SELECT execution_generation
+FROM task
+WHERE task_id = :taskId;
+```
+
+7. 插入新尝试。代次列只写 `actualGeneration`。插入失败则 `ROLLBACK`。
+
+```sql
 INSERT INTO task_attempt (
   task_attempt_id, task_id, execution_generation,
   execution_result, ownership
 ) VALUES (
-  :taskAttemptId, :taskId, :observedGeneration + 1,
+  :newAttemptId, :taskId, :actualGeneration,
   'OPEN', 'CURRENT'
 );
+```
 
--- 插入失败则 ROLLBACK，代次加一也不留下。
+8. 按第 3 步保存的 `observedStatus` 取代旧尝试。`PENDING` 或 `RETRY_WAITING` 执行下面第一句，预期改变 0 行。`RUNNING` 执行第二句，预期改变 1 行。不得改用第 5 步之后已经变成 `RUNNING` 的任务状态来选择句子。
 
+```sql
 UPDATE task_attempt
 SET execution_result = 'INTERRUPTED',
     ownership = 'SUPERSEDED'
@@ -245,15 +262,62 @@ WHERE task_id = :taskId
   AND execution_generation = :observedGeneration
   AND execution_result = 'OPEN'
   AND ownership = 'CURRENT';
-
--- 领取前是 PENDING 或 RETRY_WAITING：这一句必须影响 0 行。
--- 领取前是 RUNNING：这一句必须影响 1 行。
--- 语句失败或行数不符则 ROLLBACK，新插入的尝试一并撤销。
-
-COMMIT;
 ```
 
-插入失败、取代失败或提交前崩溃，都是整笔回滚：代次仍是领取前的值，没有新的 `CURRENT`。提交成功后响应丢失时，重读任务代次和尝试。代次已经是预期的新值且该尝试为 `OPEN` / `CURRENT`，按已提交处理，不再次加一。两处都还是旧值，才整笔重试。不猜测连接中断后的提交结果。
+```sql
+UPDATE task_attempt
+SET execution_result = 'INTERRUPTED',
+    ownership = 'SUPERSEDED'
+WHERE task_attempt_id = :observedAttemptId
+  AND task_id = :taskId
+  AND execution_generation = :observedGeneration
+  AND execution_result = 'OPEN'
+  AND ownership = 'CURRENT';
+```
+
+9. 影响行数不等于该路径的预期，或语句失败，则 `ROLLBACK`。第一句影响 0 行时，历史 `FAILED` / `RELEASED` 保持原样。
+10. 提交前再次读取任务代次、新尝试代次和新尝试的执行权。三者必须满足：任务代次等于 `actualGeneration`，新尝试代次等于任务代次，执行权为 `CURRENT`，并且该任务此时只有这一条 `CURRENT`。任一不符则 `ROLLBACK`。
+11. 通过第 10 步才 `COMMIT`。提交前崩溃或任一步回滚：已提交代次不变，没有新的 `CURRENT`。提交成功后，大于 0 的代次和这条 `CURRENT` 一起成为执行权。
+
+### 5.2 领取响应丢失后的重读
+
+恢复时只读已经提交的任务行和尝试行，不使用发出领取前保存在内存里的状态当作结果。不新建 `taskId`。除下表写明「重做完整领取」的一行外，不插入尝试，不把别的行改成 `CURRENT`，也不单独把任务代次再加一。
+
+| 读回结果 | 处理 |
+| --- | --- |
+| 任务代次等于本次预期的新代次，本次新尝试存在，执行结果为 `OPEN`，执行权为 `CURRENT`，且代次与任务代次相同 | 原领取已提交。停止，不重复插入 |
+| 任务代次仍是领取前的值，不存在本次新尝试，领取前的尝试也保持锁定时见到的结果和执行权 | 原事务没有提交。允许重做第 5.1 节的完整领取事务 |
+| 任务代次已经大于本次预期的新代次，本次尝试不存在或已是 `SUPERSEDED` | 停止本次恢复。不插入，不加代次 |
+| 任务代次与任一相关尝试的代次不一致 | 完整性异常。停止并留下可核对的读回记录。不改任务，不补尝试 |
+| 任务代次已经大于领取前的值，但找不到对应该代次的尝试 | 完整性异常。停止并留下读回记录。不补写 `CURRENT` |
+| 读回失败，或不能确认属于上面哪一行 | 不推断成功或失败。不写任务行和尝试行。保留这次尚未判定的恢复记录，稍后只重读 |
+
+只有第二行允许重做完整领取。不能确认时不得重做。恢复记录的保存介质仍是 IR-10，本轮不另选。上面的判定没有在 MySQL 8.0.46 上执行。
+
+```text
+read task and attempts for the same taskId
+if read fails or the row is ambiguous:
+  record unresolved recovery
+  return 领取结果不确定
+if task.generation = expectedNew
+   and new attempt exists
+   and new attempt.generation = task.generation
+   and new attempt is OPEN / CURRENT:
+  return already committed
+if task.generation = observedGeneration
+   and new attempt is absent
+   and the pre-claim attempt is unchanged:
+  run the whole claim transaction once
+  return that transaction's port result
+if task.generation > expectedNew:
+  return stop
+if any attempt generation differs from its task generation
+   or task.generation > observedGeneration and no attempt has that generation:
+  record integrity exception
+  return stop
+record unresolved recovery
+return 领取结果不确定
+```
 
 ## 6. 租约
 
@@ -299,19 +363,43 @@ COMMIT;
 1. 调度适配按尚未选定的周期触发一次扫描。触发本身不改任务行。
 2. Worker 读取 `status` 为 `RUNNING` 且到期时刻不晚于语句 `NOW()` 的任务标识。这次读取不加任务行锁，也不是执行权。
 3. 对每个标识调用 Core 的执行权端口。端口由 Worker 装配成第 5.1 节的领取事务。
-4. 领取事务锁定该任务行，条件不成立则改变 0 行并结束，不插入尝试。
-5. 条件成立时，代次加一，`status` 保持 `RUNNING`。
-6. 同一事务插入新的 `OPEN` / `CURRENT`。
-7. 同一事务把旧的 `OPEN` / `CURRENT` 写成 `INTERRUPTED` / `SUPERSEDED`。行数必须是 1，否则整笔回滚。
+4. 领取事务锁定该任务行，并保存领取前的 `status`、代次和当前尝试。条件不成立则结束，不插入尝试。
+5. 条件成立时按第 5.1 节更新任务行。代次加一后先读回实际代次。读回值不等于预期则整笔回滚。`status` 保持 `RUNNING`。
+6. 同一事务插入新的 `OPEN` / `CURRENT`，代次只写读回值。
+7. 按领取前已经保存的 `RUNNING` 状态，把锁定时那条 `OPEN` / `CURRENT` 写成 `INTERRUPTED` / `SUPERSEDED`。影响行数必须是 1，否则整笔回滚。提交前再核对任务代次与新尝试代次相同。
 8. 提交后若有效阻断已在，该尝试只核对阻断并提交 `FAILED`。不固定快照，不解析契约，不提取，不写观测，不标准化。
 9. 只有 `status` 为 `RUNNING`、新尝试为 `CURRENT` 且有效阻断为空，Worker 才调用 Pipeline 的正常阶段。
 10. 旧 Worker 在新代次提交前仍可完成已经持有任务行锁的事务。新代次提交后，旧代次的下一笔权威写入在加锁时失败并回滚。
 
-多个 Worker 同时扫描时，不靠进程内锁。同一任务只有一个领取事务能把代次加一并提交。其余事务等待这把行锁，随后改变 0 行。扫描读到的标识在领取前已经续租或进入终态时，领取条件失败，不产生第二代。
+多个 Worker 同时扫描时，不靠进程内锁，也不靠 Redis。同一任务只有一个领取事务能把代次加一并提交。其余事务等待这把行锁，随后改变 0 行。扫描读到的标识在领取前已经续租或进入终态时，领取条件失败，不产生第二代。Quartz 重复触发、延迟触发或同一进程里两次扫描重叠，都只再调用这个端口。它们不形成第二套执行权。扫描间隔、租约时长和 misfire 仍未选定，留给后续调度实现，本轮不决定。
 
-扫描或领取事务失败时，已提交代次不变。下一次触发再扫描。领取提交成功但响应丢失时，按第 5.1 节重读，不凭超时再加一代。Worker 在领取提交后崩溃，任务仍是 `RUNNING`，新租约到期后由同一次扫描再次进入本链。没有稳定来源身份的消息仍然不创建任务，本链不给它补一个可领取的任务。
+执行权端口只有一个。下面五个结果是它的返回分类，不是另一个端口，也不新增任务状态。
 
-这是候选调用链，不是已接受 ADR，也不是 Quartz 已经集成。编码前 IR-07 仍要单独的 ADR。本轮不创建该 ADR。
+| 端口结果 | 含义 | 随后动作 |
+| --- | --- | --- |
+| 未领到 | 条件不成立，改变 0 行，没有新代次 | 不调用 Pipeline，不收敛 |
+| 已领到并可执行正常 Pipeline | 第 5.1 节已提交。`status` 为 `RUNNING`，新尝试为 `CURRENT`，有效阻断为空 | Worker 调用 Pipeline。Quartz 不传入 Pipeline |
+| 已领到且只做 `FAILED` 收敛 | 第 5.1 节已提交，有效阻断已在 | 只核对阻断并提交 `FAILED`。不重新执行正常 Pipeline |
+| 领取结果不确定 | 提交响应丢失，或第 5.2 节还不能判定 | 只按第 5.2 节重读。不插入尝试，不加代次 |
+| 数据库或事务错误 | 死锁、锁等待超时、连接失败或语句失败 | 该任务未提交的事务回滚。不撤销本批次里其他任务已经提交的领取 |
+
+扫描查询只产生候选标识。每个任务的领取是独立事务。已经提交的领取不因同一次扫描里另一个任务失败而撤销。单个任务失败不得因此回滚整个批次。扫描查询本身失败时，这一轮没有候选，也不授予执行权，等下一次触发再查。
+
+| 场景 | 处理 |
+| --- | --- |
+| 扫描查询失败 | 本轮扫描失败。不领取。后续触发再查 |
+| 某一任务领取条件不成立 | 端口结果为未领到。不执行 Pipeline |
+| 单个任务死锁 | 只回滚该任务未提交的事务，继续本批次其余标识 |
+| 单个任务领取事务失败 | 回滚该事务。不留下半个代次或孤立 `CURRENT` |
+| 领取成功后 Pipeline 失败 | 按已有的重试或阻断规则处理。不把扫描再当成一次执行权 |
+| 已有有效阻断 | 端口结果为只做 `FAILED` 收敛 |
+| 领取事务中进程退出 | 未提交事务回滚。任务保持领取前的已提交状态。后续扫描再发现 |
+| 领取提交成功但响应丢失 | 按第 5.2 节判定。不能确认时不重做领取 |
+| 两次扫描重叠 | 由任务行锁和领取条件仲裁。不使用进程内锁 |
+
+没有稳定来源身份的消息仍然不创建任务，本链不给它补一个可领取的任务。Worker 在领取提交后崩溃，任务仍是 `RUNNING`，新租约到期后由同一次扫描再次进入本链。
+
+这是候选调用链，不是已接受 ADR，也不是 Quartz 已经集成。本轮不引入 Quartz 依赖，不创建调度器实例。编码前 IR-07 仍要单独的 ADR。本轮不创建该 ADR。
 
 ## 7. 领域结果围栏
 
@@ -557,8 +645,8 @@ ADR-0004 未改。先固定快照，确定性解析失败不降成 `UNMAPPED`，
 
 ## 16. 尚未解决
 
-- `status`、代次、租约、尝试结果都没有 DDL，也没有 8.0.46 并发测试。本轮不另设终态列。代次的逻辑初值是 0，列类型和溢出上限未选。
-- 到期扫描的调用链是候选。Quartz 仍未进入模块依赖，扫描间隔未选。该项进入实现前仍要 IR-07 的 ADR。本轮不创建 ADR。
+- `status`、代次、租约、尝试结果都没有 DDL，也没有 8.0.46 并发测试。本轮不另设终态列。代次的逻辑初值是 0。列类型未选，因此不写溢出上限，也不把某种 `sql_mode` 当成已经验证的失败方式。
+- 到期扫描的调用链和端口结果是候选。Quartz 仍未进入模块依赖。扫描间隔、租约时长和 misfire 未选。该项进入实现前仍要 IR-07 的 ADR。本轮不创建 ADR。
 - IR-03 仍是来源事件身份未决。本轮的状态模型没有验证它，也不能代替它。
 - JDBC 是否报告“实际改变的行数”未验证。
 - 会话时区未统一。心跳间隔、租约长度、重试次数未测量。
