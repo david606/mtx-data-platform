@@ -32,7 +32,7 @@ MTX Data Platform（MTX RDP）的代码、文档和配置都进入本仓库。Ma
 2. 不要提交密钥、令牌、密码、证书私钥、`.env` 或本地编辑器状态。
 3. 不要把 Quartz 或 DolphinScheduler 的 API 写入 Pipeline、Connector、Transform、Writer。
 4. 不要把同一任务同时交给 Quartz 和 DolphinScheduler。
-5. 版本基线沿用 [docs/decisions/0001-technology-baseline.md](docs/decisions/0001-technology-baseline.md)。模块结构和依赖是否进入类路径以 [docs/decisions/0002-v2-module-architecture.md](docs/decisions/0002-v2-module-architecture.md) 为准。替换 Doris、Kafka、Quartz、JUnit 5 或 JDK 25 需要新的决策记录，不能在功能分支里顺手更换。
+5. 版本基线沿用 [docs/decisions/0001-technology-baseline.md](docs/decisions/0001-technology-baseline.md)。模块结构和依赖是否进入类路径以 [docs/decisions/0002-v2-module-architecture.md](docs/decisions/0002-v2-module-architecture.md) 为准。MySQL 8.0.46 与 Doris 4.0.7 以 [docs/decisions/0005-mysql-doris-storage-baseline.md](docs/decisions/0005-mysql-doris-storage-baseline.md) 为准。替换这些版本、Kafka、Quartz、JUnit 5 或 JDK 25 需要新的决策记录，不能在功能分支里顺手更换。
 
 当前测试只有 `app-admin` 与 `app-worker` 的上下文启动测试。不要在说明里把尚未存在的集成测试或业务功能写成已经验证。
 

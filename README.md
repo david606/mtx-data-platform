@@ -18,7 +18,7 @@ MTX Data Platform（MTX RDP）是面向连锁餐饮企业的统一数据平台�
 
 ## 技术基线
 
-版本依据见 [docs/decisions/0001-technology-baseline.md](docs/decisions/0001-technology-baseline.md)。V2 模块结构见 [docs/decisions/0002-v2-module-architecture.md](docs/decisions/0002-v2-module-architecture.md)。
+版本依据见 [docs/decisions/0001-technology-baseline.md](docs/decisions/0001-technology-baseline.md)。V2 模块结构见 [docs/decisions/0002-v2-module-architecture.md](docs/decisions/0002-v2-module-architecture.md)。MySQL 与 Doris 的服务器版本见 [docs/decisions/0005-mysql-doris-storage-baseline.md](docs/decisions/0005-mysql-doris-storage-baseline.md)。
 
 | 领域 | 方案 | 当前状态 |
 | --- | --- | --- |
@@ -26,12 +26,13 @@ MTX Data Platform（MTX RDP）是面向连锁餐饮企业的统一数据平台�
 | 应用框架 | Spring Boot | 3.5.16 |
 | 构建 | Maven Wrapper | 3.9.6 |
 | ORM | MyBatis-Plus | 3.5.18.1 保留选型，尚未进入运行时依赖 |
-| OLAP | Apache Doris | 方向已确认。Writer 实现和客户端尚未完成 |
+| 事务数据库 | MySQL 8.0.46 | 目标服务器版本已接受。驱动、连接和库表尚未接入 |
+| OLAP | Apache Doris 4.0.7 | 服务器版本已接受。客户端和 Writer 尚未完成 |
 | 消息队列 | Apache Kafka | 客户端 3.9.2，Spring Kafka 3.3.16。均由 Spring Boot BOM 管理，骨架尚未引入 |
 | 初期调度 | Quartz | 2.5.2，由 Spring Boot BOM 管理。尚未进入运行时，调度实现未完成 |
 | 数据处理 | 自研 Transform / Pipeline | 尚未实现 |
 | 工作流演进 | Apache DolphinScheduler | 未来演进方向，当前不引入依赖 |
-| 未决策 | MySQL、Redis、Flyway | 均未选定，当前不引入 |
+| 未决策 | Redis、Flyway | 均未选定，当前不引入。MySQL 驱动、字符集、排序规则和隔离级别也未选定 |
 | 测试 | JUnit 5 | JUnit Jupiter 5.12.2 |
 | 容器 | Docker | 镜像构建尚未添加 |
 

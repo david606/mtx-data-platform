@@ -19,9 +19,9 @@ alwaysApply: true
 - 初期调度方向是 Quartz 2.5.2，版本由 Spring Boot BOM 管理。当前没有进入运行时依赖，调度实现尚未完成。不要引入 XXL-JOB，也不要新增 `platform-scheduler` 模块。
 - 自研 Pipeline 与具体调度框架解耦。Pipeline 不依赖 Quartz 或 DolphinScheduler。
 - Apache DolphinScheduler 只作为未来复杂 DAG 与工作流场景的演进方向。当前不引入其依赖，也不要写成已经使用。
-- OLAP 方向是 Apache Doris。Writer 的具体实现和客户端依赖尚未完成。不要替换成其他 OLAP。
+- OLAP 服务器版本是 Apache Doris 4.0.7，由 ADR-0005 接受。Writer 的具体实现和客户端依赖尚未完成。不要替换成其他 OLAP，也不要把该版本写成已经接入。
 - MyBatis-Plus 3.5.18.1 的 `mybatis-plus-spring-boot3-starter` 只保留选型，并登记在根 POM 的 `dependencyManagement`。它尚未进入运行时依赖。不要并行再声明 MyBatis 或 MyBatis-Spring 版本，也不要把它写成已经接入。
-- MySQL、Redis、Flyway 均未决策。不要写成已选定，也不要引入对应依赖。
+- MySQL 8.0.46 是 ADR-0005 已接受的目标服务器版本。不要写成笼统的 8.0，不要改成 8.4，不要把它写成仍处于常规维护支持，也不要引入驱动或写成已经接入。Redis、Flyway 仍未决策，不要引入对应依赖。
 - 测试使用 JUnit Jupiter 5.12.2，由 Spring Boot BOM 管理。不要换成 TestNG，也不要在未更新决策时升到 JUnit 6。
 - 数据处理是自研 Transform / Pipeline。当前能力模块仍是骨架，不代表转换或流程已经实现。
 

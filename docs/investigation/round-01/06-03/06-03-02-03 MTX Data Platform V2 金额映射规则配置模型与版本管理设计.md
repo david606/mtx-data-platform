@@ -32,10 +32,10 @@
 | Pipeline | 只依赖 common 和 core，不依赖 Quartz 或 DolphinScheduler | 映射只通过 core 端口进入流程 |
 | Admin 与 Worker | 独立部署，互不依赖 | Admin 写配置，Worker 读已发布快照，不调用 Admin 内部类 |
 | Kafka、Doris、MyBatis-Plus、Quartz | 方向已确认，骨架还没有把对应 starter 放上运行时类路径 | 不把它们写成已经完成的能力 |
-| MySQL、Redis、Flyway | ADR-0002 写明未决策 | 下文的 MySQL DDL 是配置库建议，不是已经接入的数据库 |
+| MySQL、Redis、Flyway | MySQL 服务器版本 8.0.46 已由 ADR-0005 接受。Redis、Flyway 仍未决策。驱动尚未引入 | 下文的 MySQL 表是建议结构，不是已经接入的数据库，也不是已批准物理模型 |
 | 调度 | 初期方向是 Quartz，当前没有调度实现 | 映射发布不新建调度任务，也不把 Quartz API 放进 Pipeline |
 
-与任务基线的差异只有数据库：任务要求按 MySQL 设计配置表，ADR-0002 仍写 MySQL 未决策。因此第 12 节的表是“若配置库采用 MySQL 时的结构”。在该决策接受之前，不能创建这些表，也不能在模块里引入 MySQL 驱动。
+事务产品版本已由 ADR-0005 接受为 MySQL 8.0.46。第 12 节的表仍是建议结构，不是已批准物理模型。版本接受不等于可以建表或引入驱动。
 
 ## 3. 领域对象与职责
 

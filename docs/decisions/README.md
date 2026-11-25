@@ -8,3 +8,4 @@
 | [0002](0002-v2-module-architecture.md) | V2 十模块结构 | 已接受。V2 模块结构以本决策为准 |
 | [0003](0003-unmapped-conflict-observation.md) | 未识别金额与冲突金额的观测处理 | 已接受。不替代 06-03-03-05 的字段和窗口细节 |
 | [0004](0004-external-contract-version-resolution.md) | 外部契约版本解析与金额提取前置规则 | Accepted（已接受）。三份冻结设计文档中的旧条款尚未按本决策修订 |
+| [0005](0005-mysql-doris-storage-baseline.md) | MySQL 与 Doris 存储基线 | 已接受。MySQL 8.0.46 与 Doris 4.0.7 是目标服务器版本。驱动、库表和工程接入尚未完成 |

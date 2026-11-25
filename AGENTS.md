@@ -24,7 +24,7 @@ MTX Data Platform（简称 MTX RDP）是面向连锁餐饮企业的统一数据�
 | 当前实际实现 | 十模块 Maven 骨架；`app-admin` 与 `app-worker` 各有一个 Spring Boot 启动类和上下文启动测试。八个 `platform-*` 模块允许没有 Java 源文件 |
 | 已确认架构约束 | [ADR-0001](docs/decisions/0001-technology-baseline.md) 的技术基线，以及 [ADR-0002](docs/decisions/0002-v2-module-architecture.md) 的十模块和依赖矩阵 |
 | 规划中的能力 | 连接器、消息消费、转换、质量检查、写入、Pipeline、调度、业务 API 和表结构 |
-| 待决策事项 | MySQL、Redis、Flyway；Doris 客户端版本；调度适配放在哪个现有模块 |
+| 待决策事项 | Redis、Flyway；MySQL 驱动、连接池、字符集、排序规则和隔离级别；Doris 客户端版本；调度适配放在哪个现有模块 |
 
 正式详细设计未入库前，不要把 `docs/investigation/` 中的调查或设计稿写成已经实现的生产功能。金额处理相关的已接受决策只以 [ADR-0003](docs/decisions/0003-unmapped-conflict-observation.md) 和 [ADR-0004](docs/decisions/0004-external-contract-version-resolution.md) 的适用范围为准。
 
@@ -44,6 +44,7 @@ MTX Data Platform（简称 MTX RDP）是面向连锁餐饮企业的统一数据�
 - ADR-0002：已确认的十模块和依赖关系。
 - ADR-0003：已接受。只覆盖未识别金额与冲突金额观测，不替代字段和窗口细节文档，也不表示观测功能已经编码。
 - ADR-0004：状态是 Accepted。只覆盖固定快照内、金额路径提取之前的外部契约版本解析。它不包含表结构、索引、事务或 Java 实现。
+- ADR-0005：已接受。MySQL 8.0.46 与 Doris 4.0.7 是目标服务器版本。驱动、库表和工程接入尚未完成。
 - [docs/README.md](docs/README.md)：文档目录索引。
 - [docs/decisions/README.md](docs/decisions/README.md)：决策索引。
 
@@ -58,7 +59,7 @@ MTX Data Platform（简称 MTX RDP）是面向连锁餐饮企业的统一数据�
 
 ## 3. 已确认技术基线
 
-版本以 ADR-0001 和根 `pom.xml` 为准。不要按互联网上的更新版本升级。`dependencyManagement` 中出现坐标，不等于该依赖已进入类路径。
+版本以 ADR-0001、ADR-0005 和根 `pom.xml` 为准。存储服务器版本以 ADR-0005 为准。不要按互联网上的更新版本升级。`dependencyManagement` 中出现坐标，不等于该依赖已进入类路径。
 
 | 技术 | 已确认基线 | 当前工程状态 |
 | --- | --- | --- |
@@ -70,11 +71,12 @@ MTX Data Platform（简称 MTX RDP）是面向连锁餐饮企业的统一数据�
 | MyBatis-Plus | 3.5.18.1，构件 `mybatis-plus-spring-boot3-starter` | 只登记在根 POM 的 `dependencyManagement`。没有模块把它写入 `dependencies` |
 | Apache Kafka | Client 3.9.2，Spring Kafka 3.3.16 | 由 BOM 管理。骨架没有引入客户端 |
 | Quartz | 2.5.2 | 初期调度方向。骨架没有引入 `spring-boot-starter-quartz`，也没有调度实现 |
-| Apache Doris | OLAP 方向已确认 | 客户端和驱动版本未锁定，Writer 未实现 |
+| MySQL | 8.0.46，由 ADR-0005 接受 | 目标服务器版本已确定。驱动、连接和库表未进入工程。不是常规维护支持中的版本 |
+| Apache Doris | 4.0.7，由 ADR-0005 接受 | 服务器版本已确定。客户端和驱动版本未锁定，Writer 未实现 |
 | Apache DolphinScheduler | 未来复杂 DAG 与工作流的演进方向 | 当前不引入依赖，不是正在使用的调度器 |
 | Compiler Plugin | 3.15.0 | 根 POM 已配置 |
 
-明确不采用：JDK 27、Spring Boot 4、JUnit 6、RocketMQ、XXL-JOB、TestNG。MySQL、Redis、Flyway 未决策，不要引入对应依赖。
+明确不采用：JDK 27、Spring Boot 4、JUnit 6、RocketMQ、XXL-JOB、TestNG。MySQL 目标版本是 8.0.46，不要引入驱动，也不要改成 8.4。Redis、Flyway 未决策，不要引入对应依赖。
 
 ## 4. 固定十模块架构
 
