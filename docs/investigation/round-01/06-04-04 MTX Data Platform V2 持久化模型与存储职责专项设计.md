@@ -38,17 +38,18 @@
 
 ## 3. 持久化对象全景
 
-清单里的 18 个名字分五类。
+清单里的 18 个名字分六类，合计 18。
 
 | 分类 | 数量 | 对象 |
 | --- | --- | --- |
-| 已有明确逻辑实体 | 8 | Task、Snapshot、ContractVersion、ObservedAmount、NormalizedAmount、ConflictDecision、AuditRecord，以及作为任务权威引用的 RawPayloadReference |
+| 已有明确逻辑实体 | 8 | Task、Snapshot、ContractVersion、ObservedAmount、NormalizedAmount、ConflictDecision、AuditRecord、RawPayloadReference |
 | 已有逻辑身份，无物理模型 | 4 | TaskAttempt、TaskExecutionContext、ExtractedFieldResult、ReplayRequest |
 | 阶段性数据，不一定独立成表 | 2 | MappingResult、ProcessingErrorRecord |
 | 当前不应建立 | 2 | QualityCheckResult、WriterExecutionRecord |
-| 分析副本，尚未设计 | 2 | RawPayload 的正文介质尚未选定；Doris 分析数据只有 OLAP 方向 |
+| 原始报文正文，介质未选定 | 1 | RawPayload |
+| 分析副本，物理模型尚未设计 | 1 | Doris 分析数据 |
 
-RawPayload 指报文字节，不是引用标识。它有保存需求，但没有已确认介质，所以不把它算成已经选定的一种库表。
+RawPayload 是原始报文正文，不是 OLAP 分析副本，也不是 `rawPayloadRef`。它有保存需求，但没有已确认介质，所以不把它算成已经选定的一种库表。
 
 MappingResult 在当前 Pipeline 里不是独立实体。匹配结果和 `mappingStatus` 属于同一次写出的 `ObservedAmount`。ConflictDecision 是配置侧的不可变决定，不是运行时那条 `CONFLICT` 观测。
 
@@ -62,7 +63,7 @@ ProcessingErrorRecord 不单建通用错误表。任务阻断、字段失败和�
 
 ### 4.1 事务型元数据
 
-承担任务、尝试、执行上下文、已发布快照、契约版本、冲突决定、重放请求标识、字段结果和审计记录的权威。
+承担任务、尝试、执行上下文、已发布快照、契约版本、冲突决定、重放请求标识和审计记录的权威。字段结果在逻辑上属于金额处理执行结果。它可以使用同一种事务型产品保存，但权威只有一份，不能在元数据和金额结果里各写一份。是否独立成表未决定。
 
 这类存储必须能表达唯一性和“创建或返回已有记录”。Pipeline 已经禁止用 JVM 本地锁代替跨 Worker 幂等，但没有批准索引、锁或隔离级别。本轮也不设计它们。
 
@@ -78,32 +79,42 @@ ProcessingErrorRecord 不单建通用错误表。任务阻断、字段失败和�
 
 ### 4.3 金额处理结果
 
-权威包括 `ObservedAmount`、与它一次写出的匹配结果、版本固定记录和 `NormalizedAmount`。计算结果身份尚未冻结，当前没有已发布计算规则时不写计算结果。
+权威包括 `ExtractedFieldResult`、`ObservedAmount`、与观测一次写出的匹配结果、版本固定记录和 `NormalizedAmount`。`ExtractedFieldResult` 的逻辑归属是金额处理执行结果。物理上允许与事务型元数据使用同一种存储产品，是否独立成表仍未决定。无论是否同产品或是否同表，字段结果只有一个权威来源。失败的字段结果不写入 `ObservedAmount`。计算结果身份尚未冻结，当前没有已发布计算规则时不写计算结果。
 
 这些结果引用 `snapshotId`、`contractVersionId` 和 `rawPayloadRef`，但不替代配置库和原文库。观测一旦写出就不可覆盖。标准化结果按自己的逻辑身份保存，不回写观测。
 
 ### 4.4 OLAP 分析
 
-ADR-0001 和 ADR-0002 只确认 Apache Doris 是 OLAP 方向。库、表、分桶和字段都未确认。
+ADR-0001 和 ADR-0002 确认 Apache Doris 是初期 OLAP 方向。库、表、分桶和字段都未确认。这个方向不改变 Doris 与事务型元数据的边界：Doris 不保存任务终态的权威，不执行配置发布事务，不保存审计的权威记录，也不代替原文读取。
 
-当前仓库没有 ODS、DWD、DIM、DWS、ADS 分层设计。本轮不创建这五层。若以后建立分析层，它只保存已经在权威存储中形成的不可变结果副本，用于分析查询。它不保存任务终态的权威、不执行配置发布事务、不保存审计的权威记录，也不代替原文读取。
+平台数据分层方向是 ODS、DWD、DIM、DWS、ADS。本轮尚未完成各层的物理模型、表结构和层间加工规则。当前仓库没有这些层的已确认表，不等于这五层已经被取消。分析层只承接已经在权威存储中形成的不可变结果副本。本轮不设计这些表。
 
 不能假设关系库和 Doris 共用一个本地事务。分析副本延迟或失败，不回滚已经提交的观测，也不把 Doris 写入成功当成任务终态的依据。
 
 ## 5. 实体身份与生命周期
 
-身份规则以现有设计为准，不新增字段。
+身份规则以现有设计为准，不新增字段，也不发明 `taskId` 或 `replayRequestId` 的生成算法。
+
+任务相关身份分成五件已经写明的事，不能合成一个通用键：
+
+| 身份 | 已有规则 | 尚未决定 |
+| --- | --- | --- |
+| 稳定接入事件身份 | 只在来源契约已经声明时，才是非重放任务的幂等身份。Pipeline 第 4.2 节 | 来源没有声明时如何识别重复投递。待来源契约确认 |
+| 内部 `taskId` | 逻辑任务的内部标识。重复投递和技术重试沿用它 | 生成算法待存储设计 |
+| 普通重复投递 | 来源已声明稳定事件身份时，回到原 `taskId`。即使本次 `rawPayloadRef` 不同或缺失，或者看到的 `receivedAt` 不同，也不新建任务，不替换第一次保存的权威引用和权威 `receivedAt`，不创建 `replayRequestId` | 没有稳定事件身份的来源不适用这条规则 |
+| 显式重放 | 新 `taskId`，调用方给出 `replayRequestId`。同一个 `replayRequestId` 返回已有重放任务。新任务另建观测，不覆盖旧观测 | `replayRequestId` 的生成算法未设计，且不能写入观测身份 |
+| 没有稳定事件身份 | 不能假设每个来源都有 `sourceEventId` 或 `sourceMessageId`。不能用来源金额、`rawPayloadRef` 或 `receivedAt` 拼键，也不能写成已经具备跨投递幂等 | 等来源契约声明后再定。确认前不发明算法 |
 
 | 对象 | 身份 | 生命周期要点 |
 | --- | --- | --- |
-| Task | 非重放任务的幂等身份是来源契约声明的稳定接入事件身份。`taskId` 是内部标识，生成算法未设计。`receivedAt` 和 `rawPayloadRef` 不是任务身份 | 第一次接受时保存权威引用和权威 `receivedAt`。重复投递不新建任务，也不替换这两个权威值。终态提交后不覆盖 |
+| Task | 见上面五件身份。`receivedAt` 和 `rawPayloadRef` 不是任务身份 | 只有来源已声明稳定事件身份时，重复投递才回到原任务并保留第一次保存的权威引用和权威 `receivedAt`。终态提交后不覆盖。没有稳定事件身份时，任务幂等待决策 |
 | TaskAttempt | `taskAttemptId` 表示一次尝试。不进入观测身份、字段结果键或阻断身份 | 技术重试可以新建。旧尝试不能覆盖已完成字段结果和已提交终态 |
 | TaskExecutionContext | 任务上已经固定的快照、`parserVersion`、契约版本和正文哈希 | 第一阶段固定快照和解析器，第二阶段只在胜出快照内固定契约版本。原任务重试不改选 |
 | Snapshot | 已发布批次。06-03-02-03 写 `batchId` 就是 `snapshotId` | 发布后不修改旧快照。审核通过本身不产生快照 |
 | ContractVersion | `contractVersionId` 加封存正文哈希 | 正文变化是新版本。提取不在运行时重分配修订号 |
 | RawPayloadReference | 任务第一次保存的权威引用 | 重复投递带来的新引用或缺失引用不替换它 |
 | RawPayload | 字节本身还没有技术主键方案 | 不覆盖。保留期限待确认 |
-| ExtractedFieldResult | `taskId + contractVersionId + fieldPath` | 同一键返回已有结果，内容不一致是完整性异常。失败不写观测 |
+| ExtractedFieldResult | `taskId + contractVersionId + fieldPath`。逻辑上属于金额处理执行结果 | 同一键返回已有结果，内容不一致是完整性异常，失败不写观测。物理上可以与事务型元数据使用同一种产品，权威只有一份。是否独立成表未决定 |
 | ObservedAmount | 四段观测身份 | 创建后不改金额、`mappingStatus`、`presence` 和 `rawText`。换快照才是另一条观测 |
 | MappingResult | 无独立身份。它是观测写出时的匹配内容 | 不单独更新 |
 | NormalizedAmount | `normalizationIdentity`。它含观测身份和两个规则版本，不含 `taskId` | 相同身份且内容相同返回已有结果。内容不同是完整性异常，不覆盖 |
@@ -244,15 +255,15 @@ Admin 与 Worker 都要使用配置和任务端口，但 Admin 不能依赖 Writ
 1. 需要四类存储职责：事务型元数据、原始报文正文、金额处理结果、OLAP 分析副本。不需要据此选定四种数据库。
 2. 金额观测和事务型元数据不是必须使用同一个数据库。早期建议放在同一种具备事务和唯一约束的产品中，因为当前不能假设跨存储原子提交。
 3. 原始报文正文的介质未选定。`rawPayloadRef` 只是权威引用。
-4. Doris 只保存将来的分析副本。它不保存任务状态、配置发布和审计权威。仓库没有 ODS 到 ADS 的已确认分层。
+4. Doris 仍是初期 OLAP 方向，只保存分析副本。它不保存任务状态、配置发布和审计权威。ODS、DWD、DIM、DWS、ADS 是数据分层方向。各层物理模型、表结构和加工规则尚未设计，这不表示五层已经被取消。
 5. `ObservedAmount` 和 `NormalizedAmount` 独立持久化。它们的身份不同，标准化不回写观测。
 6. MappingResult 不需要独立物理实体。它随观测一次写出。
 7. ConflictDecision 靠“创建后不修改、变化时另建一条”保证不可变。本轮不设计触发器或权限。
-8. Task 是逻辑任务，TaskAttempt 是一次尝试，执行上下文是该任务已经固定的快照和契约版本。不另建通用阶段执行实体。
+8. Task 的幂等只在来源契约已经声明稳定事件身份时成立。`taskId` 是内部标识。显式重放是另一个任务。没有稳定事件身份时不发明幂等键。TaskAttempt 是一次尝试，执行上下文是该任务已经固定的快照和契约版本。不另建通用阶段执行实体。
 9. 配置快照发布后不修改。历史观测继续引用原 `snapshotId`。
 10. 审计使用已有阻断身份或完整性审计身份。普通日志只关联标识，不代替审计。
 11. 历史重放是新任务和新的观测身份，调用方提供 `replayRequestId`。它不覆盖旧观测，也不自动按订单号发生。
 12. 关系库与 Doris 之间没有已批准的共同事务。分析副本失败不回滚权威结果，权威结果也不以 Doris 成功为准。
-13. 需要强唯一性的是已经写明的逻辑身份：稳定事件任务、重放请求、观测身份、标准化身份、版本固定键、字段结果键、审计身份，以及已发布快照和冲突决定的各自身份。物理约束尚未设计。
+13. 需要强唯一性的是已经写明的逻辑身份：来源已声明的稳定事件任务、重放请求、观测身份、标准化身份、版本固定键、字段结果键、审计身份，以及已发布快照和冲突决定的各自身份。没有稳定事件身份的来源还没有幂等键。物理约束尚未设计。
 14. 已发布快照、被引用的契约版本、观测、标准化结果、冲突决定和审计不能随意删除。保留天数待确认。
 15. 还不具备进入物理数据库模型设计并产出 DDL 的条件。事务型产品、原文介质、物理唯一约束和适配器归属都未决定。可以进入下一轮比较和约束清单，但不能建表。
