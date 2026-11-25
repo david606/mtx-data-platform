@@ -48,4 +48,12 @@ DolphinScheduler 只作为未来复杂 DAG 与工作流场景的演进方向。�
 
 禁止 Quartz 与 DolphinScheduler 对同一个任务重复调度。真的迁移某个任务时，需要明确该任务只保留一个触发源。触发来源如何记入运行记录，尚未设计。
 
-当前没有调度适配层。不要在 `app-admin` 或 `app-worker` 里临时直接创建 Quartz `Scheduler`。调度实现的模块归属和集成方式待详细设计，不在现有十模块之外新增模块。
+当前没有调度适配层，Quartz 也尚未进入任何模块的依赖。不要在 `app-admin` 或 `app-worker` 的业务类里直接创建 Quartz `Scheduler`。不在现有十模块之外新增模块。
+
+## 到期接管
+
+运行中的平台任务到期后，需要一次新的领取才会更换执行代次。租约到期本身不撤销旧代次，分区再分配也不代替这次领取。这项触发的候选调用链写在 [06-04-11](../investigation/round-01/06-04-11%20MTX%20Data%20Platform%20V2%20Worker%20Task%20Ownership%20与并发执行控制专项设计.md) 第 6.1 节。
+
+候选分工是：`platform-core` 只定义执行权端口；`app-worker` 装配该端口的数据库实现，并在本应用内的调度适配中周期触发扫描。Quartz 类型不得进入 `platform-pipeline`。`app-admin` 不参与这次自动扫描。多个 Worker 同时扫描时，正确性靠任务行上的条件更新，不靠另一套分布式锁。
+
+这只收窄「到期接管」这一项的候选归属。其他定时任务的模块归属仍未逐项设计。本段不是已接受的 ADR，也不表示 Quartz 已经集成。进入实现前，Worker 执行权仍要单独的 ADR。扫描间隔尚未选定。DolphinScheduler 以后不得再对同一批任务触发这次扫描。
