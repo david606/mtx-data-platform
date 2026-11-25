@@ -10,6 +10,8 @@
 
 针对复审 06-04-15 的 G-01 至 G-04，基线是 `7d1421745282ea048f1a2c9afa2c468ca70d9133`。本轮只补精确代次比较、恢复读取的独立事务、提交前的 `CURRENT` 计数，以及端口结果的互斥归类。没有执行 SQL，没有创建 ADR，也没有关闭 IR-02、IR-03、IR-07、IR-09 或 IR-21。
 
+针对复审 06-04-16 的 H-01 与 H-02，基线是 `67cf87fb2ad17300af71f940c536e625c8aafebf`。本轮只修正计数语句的锁范围表述，并补上恢复读取里尝试行失败的出口。没有执行 SQL，没有创建 ADR，也没有关闭 IR-02、IR-03、IR-07、IR-09 或 IR-21。
+
 ## 1. 审查问题
 
 | 编号 | 第一轮缺陷 | 第二轮选择 |
@@ -308,6 +310,8 @@ WHERE task_attempt_id = :observedAttemptId
 9. 影响行数不等于该路径的预期，或语句失败，则 `ROLLBACK`。第一句影响 0 行时，历史 `FAILED` / `RELEASED` 保持原样。
 10. 提交前在同一事务中核验。任务代次必须等于 `actualGeneration`，新尝试代次必须等于任务代次，新尝试执行权必须为 `CURRENT`。然后只按 `task_id` 计数 `CURRENT`。这次计数发生在新尝试插入和旧尝试取代之后、`COMMIT` 之前。预期严格等于 1。等于 0 或大于 1，都 `ROLLBACK`。不得只看新尝试自己是不是 `CURRENT`，也不得漏掉同任务上遗留的另一条 `CURRENT`。
 
+下面是候选完整性检查，不是已经验证过锁行为的语句：
+
 ```sql
 SELECT COUNT(*)
 FROM task_attempt
@@ -316,7 +320,13 @@ WHERE task_id = :taskId
 FOR UPDATE;
 ```
 
-任务行锁已经在第 2 步持有。这句再锁本任务的尝试行，锁顺序是先任务行、后尝试行。其他领取要先等任务行锁，不能先锁尝试行再改代次。计数不是物理唯一约束。另一条不执行本检查的事务仍可能写入第二条 `CURRENT`。IR-02 的唯一约束和 Create-or-Get 没有被这句代替，也没有因此关闭。
+这三件事分开：
+
+- 合规领取的串行依据是第 2 步已经持有的任务行锁。遵守本协议的其他领取必须先取得同一任务行锁，因此要等本事务提交或回滚，不能先锁尝试行再改代次。
+- `CURRENT` 计数只检查本事务提交前读到的行数。不是 1 就整笔回滚。它是完整性检查。
+- 物理唯一约束和 Create-or-Get 仍是 IR-02。IR-02 未关闭。计数不代替它。
+
+`task_attempt.task_id` 的索引、事务隔离级别和这条语句的执行计划都还没有选定。MySQL 8.0 手册没有单独规定 `SELECT COUNT(*) ... FOR UPDATE` 锁住哪些记录或间隙。本设计不推断聚合加锁读的锁范围，也不把「只锁定本任务的尝试行」写成已确定事实。这句也不能被写成已经阻止所有并发插入 `CURRENT`。不执行本检查、或不先取得任务行锁的写入，仍可能留下第二条 `CURRENT`。上述锁行为待在 MySQL 8.0.46 上验证。验证之前，这句保持为候选语句。
 
 设计预期如下，全部未执行：
 
@@ -340,8 +350,8 @@ FOR UPDATE;
 1. 废弃原连接，或在该连接上发出回滚。这一步的返回值不能证明服务器已经提交或已经回滚。
 2. 在另一条连接上开启新的恢复事务。
 3. 对该任务行执行 `SELECT ... FOR UPDATE`。原领取事务若仍持有这把锁，本句等待，直到对方提交、回滚或本句锁等待结束。等待期间不得根据普通一致性读看到的旧快照认定原领取失败，也不得开始新的领取。
-4. 锁等待超时、查询失败或结果不完整时，恢复事务结束。端口结果只能是领取结果不确定。不重做领取，不调用 Pipeline。
-5. 拿到锁之后，在同一恢复事务里用 `FOR UPDATE` 读取该任务的尝试行，再按已提交状态归类。
+4. 任务行锁定读取出现锁等待超时、查询失败或结果不完整时，恢复事务结束。端口结果只能是领取结果不确定。不重做领取，不调用 Pipeline，不用内存中的 `actualGeneration`。
+5. 任务行读取成功之后，在同一恢复事务里用 `FOR UPDATE` 读取该任务的尝试行，再按已提交状态归类。尝试行读取失败、结果不完整，或两行合起来不能确定属于哪一种恢复状态时，恢复事务结束。端口结果同样只能是领取结果不确定。不重做领取，不调用 Pipeline，不用内存中的 `actualGeneration`。
 6. 恢复事务不插入尝试，不加代次，不把旧尝试改回 `CURRENT`，不新建 `taskId`。
 7. 只有归类确认原事务没有留下新代次时，才在恢复事务结束之后，另开第 5.1 节的完整领取事务。确认已经提交时，不重做领取。不能确认时，不重做领取。
 8. 恢复事务本身不调用 Pipeline。只有独立读取确认领取已经提交，并按阻断列分成正常执行或 `FAILED` 收敛之后，才允许后续调用。内存里的 `actualGeneration` 不是执行权。
@@ -361,7 +371,8 @@ FOR UPDATE;
 | B. 原事务最终提交，恢复连接随后读到 | 已提交 | 新事务，`FOR UPDATE` 已拿到锁 | 预期的新代次 | 本次尝试为 `OPEN` / `CURRENT`，代次精确相等 | 否 | 仅在这次锁定读确认已提交之后，按阻断列进入正常执行或 `FAILED` 收敛。不凭内存代次 |
 | C. 原事务最终回滚，恢复连接随后读到 | 已回滚 | 新事务，`FOR UPDATE` 已拿到锁 | 仍是领取前的值 | 与 A 相同 | 是。另开完整领取 | 否 |
 | D. 原事务仍在执行 | 仍持有任务行锁 | 新事务停在 `FOR UPDATE` 的锁等待。不得用旧快照认定失败 | 尚未采用等待期间的快照 | 尚未采用等待期间的快照 | 否。等到锁之后才按 A、B 或 C 归类 | 否。锁等待超时则结果为不确定 |
-| E. 恢复查询失败 | 不由这次失败推断 | 查询没有完成 | 不采用残缺结果 | 不采用残缺结果 | 否 | 否。结果为不确定 |
+| E. 任务行锁定读取失败 | 不由这次失败推断 | 任务行查询没有完成 | 不采用残缺结果 | 尚未读取 | 否 | 否。结果为不确定。不用内存代次 |
+| G. 任务行已读到，尝试行读取失败或不完整 | 不由这次失败推断 | 尝试行查询没有完成，或两行不能归入上表 | 不把残缺读数当成执行权 | 不采用残缺结果 | 否 | 否。结果为不确定。不用内存代次 |
 | F. 等待期间另一 Worker 已提交更高代次 | 原事务可能已结束 | 新事务拿到锁后读到更高代次 | 大于本次预期的新代次 | 原尝试不存在或已是 `SUPERSEDED` | 否 | 否 |
 
 这些语句和时序没有在 MySQL 8.0.46 上执行。恢复记录的保存介质仍是 IR-10，本轮不另选。
@@ -371,18 +382,31 @@ abandon or roll back the original connection
 do not treat that result as proof of commit or rollback
 open a new transaction on another connection
 SELECT the task row FOR UPDATE
-if the lock wait times out or the read fails:
+if the lock wait times out, the task read fails, or the task read is incomplete:
+  end the recovery transaction
   return 领取结果不确定
+  do not start a new claim
+  do not call Pipeline
+  do not use in-memory actualGeneration
 read this task's attempts FOR UPDATE in the same recovery transaction
-classify only the locked committed rows
-if confirmed not committed:
+if the attempt read fails, the attempt read is incomplete, or the two reads do not match one recovery state:
+  end the recovery transaction
+  return 领取结果不确定
+  do not start a new claim
+  do not call Pipeline
+  do not use in-memory actualGeneration
+classify only the complete locked read
+if the complete read confirms the original claim left no new generation:
   end the recovery transaction
   run section 5.1 from the beginning on a new claim transaction
-if confirmed committed:
+if the complete read confirms the original claim committed:
   end the recovery transaction
-  allow normal pipeline or FAILED convergence from the locked read, not from memory
+  allow normal pipeline or FAILED convergence from the locked read, not from in-memory actualGeneration
 otherwise:
   return 领取结果不确定
+  do not start a new claim
+  do not call Pipeline
+  do not use in-memory actualGeneration
 ```
 
 ## 6. 租约
@@ -432,7 +456,7 @@ otherwise:
 4. 领取事务锁定该任务行，并保存领取前的 `status`、代次和当前尝试。条件不成立则结束，不插入尝试。
 5. 条件成立时按第 5.1 节更新任务行。代次加一后先读回实际代次。读回值不等于预期则整笔回滚。`status` 保持 `RUNNING`。
 6. 同一事务插入新的 `OPEN` / `CURRENT`，代次只写读回值。
-7. 按领取前已经保存的 `RUNNING` 状态，把锁定时那条 `OPEN` / `CURRENT` 写成 `INTERRUPTED` / `SUPERSEDED`。影响行数必须是 1，否则整笔回滚。提交前再核对任务代次与新尝试代次相同。
+7. 按领取前已经保存的 `RUNNING` 状态，把锁定时那条 `OPEN` / `CURRENT` 写成 `INTERRUPTED` / `SUPERSEDED`。影响行数必须是 1，否则整笔回滚。提交前再按第 5.1 节第 10 步核对代次，并做 `CURRENT` 计数。计数只做完整性检查。
 8. 提交后若有效阻断已在，该尝试只核对阻断并提交 `FAILED`。不固定快照，不解析契约，不提取，不写观测，不标准化。
 9. 只有 `status` 为 `RUNNING`、新尝试为 `CURRENT` 且有效阻断为空，Worker 才调用 Pipeline 的正常阶段。
 10. 旧 Worker 在新代次提交前仍可完成已经持有任务行锁的事务。新代次提交后，旧代次的下一笔权威写入在加锁时失败并回滚。
@@ -728,8 +752,8 @@ ADR-0004 未改。先固定快照，确定性解析失败不降成 `UNMAPPED`，
 ## 16. 尚未解决
 
 - `status`、代次、租约、尝试结果都没有 DDL，也没有 8.0.46 并发测试。本轮不另设终态列。代次的逻辑初值是 0。比较使用精确整数。物理列类型仍未选，因此不接受 `BIGINT`、`BIGINT UNSIGNED` 或 `DECIMAL` 中的任何一种，也不把某种 `sql_mode` 当成已经验证的失败方式。
-- 恢复读取是另一条连接上的新事务，并用 `FOR UPDATE` 等待原事务结束。`COMMIT` 结果不明只归为领取结果不确定。这些语句仍未执行。
-- 提交前的 `CURRENT` 计数不是物理唯一约束，不关闭 IR-02。
+- 恢复读取是另一条连接上的新事务，并用任务行 `FOR UPDATE` 等待原事务结束。任务行读取失败，或任务行成功后尝试行读取失败、不完整、不能归类，都是领取结果不确定：不重做领取，不调用 Pipeline，不用内存中的 `actualGeneration`。这些语句仍未执行。
+- 提交前的 `CURRENT` 计数是候选完整性检查，不是物理唯一约束，不关闭 IR-02，也不承担合规领取的串行。串行依据仍是任务行锁。`COUNT(*) ... FOR UPDATE` 的锁范围、`task_id` 索引、隔离级别和执行计划都未确定，待 MySQL 8.0.46 验证。不把这句写成已经只锁定本任务的尝试行，也不把它写成能阻止所有并发插入 `CURRENT`。
 - 到期扫描的调用链和端口结果是候选。Quartz 仍未进入模块依赖。扫描间隔、租约时长和 misfire 未选。该项进入实现前仍要 IR-07 的 ADR。本轮不创建 ADR。
 - IR-03 仍是来源事件身份未决。本轮的状态模型没有验证它，也不能代替它。
 - JDBC 是否报告“实际改变的行数”未验证。
