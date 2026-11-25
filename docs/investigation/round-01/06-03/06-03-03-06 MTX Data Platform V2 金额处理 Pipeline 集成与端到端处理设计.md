@@ -22,7 +22,7 @@
 | 设计决定 | 本文为了把各阶段接成一条链路而作出的选择。它不改写已冻结文档 |
 | 待确认 | 上游没有给出执行状态机、物理索引或计算规则正文 |
 
-本文已完成第二十轮定点整改，并已完成第二十一轮完整架构审查。第二十一轮未发现新的 P0、P1、P2、P3 架构问题。第二十轮 P2-02 和 P3-01 已关闭。尚未正式冻结。E2E-001 至 E2E-177 均未执行。本次审查不表示代码已经实现，也不表示测试通过。当前标准类型 38 个是 `DRAFT`，`AMT.FEE.DELIVERY` 是 `RETIRED`，0 个是 `ACTIVE`。已确认生产映射数量是 0。文中的 `MAPPED`、标准化和计算都是规则，不是已经发生的生产处理。测试都没有执行。
+本文已完成第二十轮定点整改，并已完成第二十一轮完整架构审查。第二十一轮未发现新的 P0、P1、P2、P3 架构问题。第二十轮 P2-02 和 P3-01 已关闭。尚未正式冻结。E2E-001 至 E2E-177 均未执行。其后为对齐取消转换新增的 E2E-178 至 E2E-183 也未执行。本次审查不表示代码已经实现，也不表示测试通过。当前标准类型 38 个是 `DRAFT`，`AMT.FEE.DELIVERY` 是 `RETIRED`，0 个是 `ACTIVE`。已确认生产映射数量是 0。文中的 `MAPPED`、标准化和计算都是规则，不是已经发生的生产处理。测试都没有执行。
 
 ## 1. 目标、范围和非目标
 
@@ -718,12 +718,13 @@ Pipeline 负责这个顺序。Worker 只装配端口实现。依赖方向仍按 
 | `ALL_FIELDS_FAILED` | 所有要求处理的字段都已结束，全部是字段级失败，没有字段成功，也没有任务级阻断 |
 | `FAILED` | 发生任务级阻断。此前已有字段成功，也不降成 `PARTIAL_SUCCESS` 或 `ALL_FIELDS_FAILED` |
 | `RETRY_WAITING` | 存在可重试的技术故障，等待用原执行上下文重试 |
-| `CANCELLED` | 已取消 |
+| `CANCELLED` | 生命周期已经结束。不是下面四种处理终态之一，也不表示业务处理成功或失败 |
 
-这四类终态互斥：`SUCCESS`、`PARTIAL_SUCCESS`、`ALL_FIELDS_FAILED`、`FAILED`。`RETRY_WAITING` 不是终态。
+这四类处理终态互斥：`SUCCESS`、`PARTIAL_SUCCESS`、`ALL_FIELDS_FAILED`、`FAILED`。`RETRY_WAITING` 不是终态。`CANCELLED` 与它们一样，一个任务只进入一次，不能互相覆盖。任务状态只有这一套取值，不另设终态列、`terminalResult` 或 `outcome`。
 
 ```text
 PENDING -> RUNNING
+PENDING -> CANCELLED
 RUNNING -> SUCCESS
 RUNNING -> PARTIAL_SUCCESS
 RUNNING -> ALL_FIELDS_FAILED
@@ -731,7 +732,27 @@ RUNNING -> FAILED
 RUNNING -> RETRY_WAITING
 RUNNING -> CANCELLED
 RETRY_WAITING -> RUNNING
+RETRY_WAITING -> CANCELLED
 ```
+
+取消只在 `status` 仍是 `PENDING`、`RETRY_WAITING` 或 `RUNNING`，并且有效阻断为空时，把这一个 `status` 写成 `CANCELLED`。已经是任一终态时不再改。有效阻断已经登记时不能写成 `CANCELLED`，任务仍按第 11.1 节收敛为 `FAILED`。已提交的观测和标准化结果不删除。谁可以发起取消仍未定义。事务和尝试行的规则与 [06-04-11](../06-04-11%20MTX%20Data%20Platform%20V2%20Worker%20Task%20Ownership%20与并发执行控制专项设计.md) 第 9 节相同，这里不另写一套：
+
+| 当前 `status` | 尝试 | 同一事务 |
+| --- | --- | --- |
+| `PENDING` | 不创建 `TaskAttempt` | 只把 `status` 写成 `CANCELLED` |
+| `RETRY_WAITING` | 不创建新尝试。已有的 `FAILED` / `RELEASED` 不改 | 只把 `status` 写成 `CANCELLED` |
+| `RUNNING`，且有 `OPEN` / `CURRENT` | 该尝试写成 `CANCELLED` / `RELEASED` | 与 `status` 一起提交。一步失败则整笔回滚 |
+
+取消、领取、领域写入和阻断登记竞争时，锁的是同一任务行，胜出由条件更新决定，不看进程内存。这三条转换不改变 `SUCCESS`、`PARTIAL_SUCCESS`、`ALL_FIELDS_FAILED`、`FAILED` 的判定条件。下面的验收行都未执行。
+
+| 场景 | 预期 | 执行 |
+| --- | --- | --- |
+| `PENDING` 取消 | `status` 为 `CANCELLED`。没有 `TaskAttempt` | 未执行 |
+| `RETRY_WAITING` 取消 | `status` 为 `CANCELLED`。历史尝试仍是 `FAILED` / `RELEASED` | 未执行 |
+| `RUNNING` 取消 | `status` 为 `CANCELLED`，当前尝试同时为 `CANCELLED` / `RELEASED` | 未执行 |
+| 已有有效阻断时取消 | 不写成 `CANCELLED`。最终只按阻断收敛为 `FAILED` | 未执行 |
+| 终态已经提交后再取消 | `status` 保持原终态 | 未执行 |
+| 取消与领取、领域写入或阻断登记并发 | 同一任务行锁。只有条件匹配的一方提交 | 未执行 |
 
 `UNMAPPED` 和 `CONFLICT` 是合法业务结果，计入字段成功，不是字段级失败。全部要求处理的字段都是这两种结果时，任务是 `SUCCESS`，不是 `ALL_FIELDS_FAILED`。`SUCCESS` 不表示每条路径都已标准化或已计算。
 
@@ -943,7 +964,7 @@ TaskFinalizeResult finalizeTask(TaskFinalizeRequest request)
 
 重试从 `RETRY_WAITING` 进入新的 `taskAttemptId`，仍用第 4 节已持久化的上下文，以及第 8 节已经固定的规则版本。已完成字段按字段结果键恢复。全部依据齐了以后才进入第 11.1 节。
 
-待确认：哪些字段级失败允许自动进入 `RETRY_WAITING`，以及取消之后执行记录如何保留。取消和失败都不覆盖已写出的领域结果。协调边界的物理实现待存储设计。来源没有稳定事件身份时的重复投递，待来源契约确认。
+待确认：哪些字段级失败允许自动进入 `RETRY_WAITING`。取消之后的尝试保留已按本节写明，发起者仍未定义。取消和失败都不覆盖已写出的领域结果。协调边界的物理实现待存储设计。来源没有稳定事件身份时的重复投递，待来源契约确认。
 
 ## 12. 追踪
 
@@ -1124,6 +1145,12 @@ TaskFinalizeResult finalizeTask(TaskFinalizeRequest request)
 | E2E-175 | 显式历史重放 | 新 `taskId`，调用方给出 `replayRequestId`。重复投递携带的另一个 `rawPayloadRef` 不创建重放任务。本行未执行 | 否 | 未执行 |
 | E2E-176 | 同一稳定接入事件再次投递，本次没有携带 `rawPayloadRef`，原权威引用上的 `ObservedAmount` 已存在 | 按稳定事件身份回到原 `taskId`。不新建任务，不替换第一次保存的权威引用。用原权威引用构造观测身份，返回已有观测和原匹配结果。不读取原文内容，不重新提取，不重新匹配，不覆盖。本行未执行 | 否 | 未执行 |
 | E2E-177 | 同一稳定接入事件再次投递，本次没有携带 `rawPayloadRef`，原权威引用上还没有 `ObservedAmount` | 按稳定事件身份回到原 `taskId`。不新建任务，不替换第一次保存的权威引用。用原权威引用构造观测身份。查询未命中后，用原权威引用读取原文，再按已固定契约版本和提取规则继续。不用本次缺失的引用读取。原权威引用的原文内容读不到时，仍沿用 `PAYLOAD_REF_INVALID`，不产生观测。本行未执行 | 否。仅原权威引用内容读不到时阻断 | 未执行 |
+| E2E-178 | `PENDING` 任务取消，尚无尝试 | `status` 变为 `CANCELLED`。不创建 `TaskAttempt`。本行未执行 | 否 | 未执行 |
+| E2E-179 | `RETRY_WAITING` 任务取消，上一次尝试已是 `FAILED` / `RELEASED` | `status` 变为 `CANCELLED`。不创建新尝试，不改历史尝试。本行未执行 | 否 | 未执行 |
+| E2E-180 | `RUNNING` 任务取消，当前尝试为 `OPEN` / `CURRENT` | 同一事务提交 `CANCELLED` 和该尝试的 `CANCELLED` / `RELEASED`。一步失败则都不变。本行未执行 | 否 | 未执行 |
+| E2E-181 | 有效阻断已登记，终态尚未提交时收到取消 | 不写成 `CANCELLED`。任务最终只为 `FAILED`。不清除阻断，不重跑正常 Pipeline。本行未执行 | 是 | 未执行 |
+| E2E-182 | `status` 已是 `SUCCESS`、`PARTIAL_SUCCESS`、`ALL_FIELDS_FAILED`、`FAILED` 或 `CANCELLED` 时再次取消 | 保持原 `status`。不覆盖。本行未执行 | 否 | 未执行 |
+| E2E-183 | 取消与领取、领域写入或阻断登记并发 | 锁同一任务行。只有条件成立的一方提交。已提交领域结果保留。本行未执行 | 否。仅阻断先登记时最终为阻断路径 | 未执行 |
 | E2E-092 | 终态已经是 `PARTIAL_SUCCESS` 后提交另一个 `blockIdentity` | `recordTaskBlock` 返回 `LATE_BLOCK_RECORDED`，新增一条迟到审计。不参与终态。终态保持 `PARTIAL_SUCCESS` | 否 | 未执行 |
 | E2E-093 | 终态已经是 `ALL_FIELDS_FAILED` 后提交另一个 `blockIdentity` | `recordTaskBlock` 返回 `LATE_BLOCK_RECORDED`，新增一条迟到审计。不参与终态。终态保持 `ALL_FIELDS_FAILED` | 否 | 未执行 |
 | E2E-077 | 两个 Worker 在终态提交前提交相同终态和相同依据 | 一个 `finalizeTask` 返回 `FINALIZED`，另一个返回 `ALREADY_FINALIZED`。不新增完整性审计 | 否 | 未执行 |
@@ -1137,7 +1164,7 @@ TaskFinalizeResult finalizeTask(TaskFinalizeRequest request)
 | E2E-085 | 契约正文与 `contractBodySha256` 不一致 | 不写入权威契约版本。不提取 | 是 | 未执行 |
 | E2E-086 | 第二阶段写入成功但响应丢失 | 重试 `createOrGetContract` 得到已有记录。不重选最新契约，不提取两次权威版本 | 否 | 未执行 |
 
-进入实现之后还需要单元测试、端口装配测试、幂等并发测试和故障重试测试。那些测试现在也不存在。
+进入实现之后还需要单元测试、端口装配测试、幂等并发测试和故障重试测试。那些测试现在也不存在。E2E-178 至 E2E-183 也没有执行。
 
 ## 14. 风险与待确认
 
@@ -1145,7 +1172,7 @@ TaskFinalizeResult finalizeTask(TaskFinalizeRequest request)
 2. 观测、标准化和计算的物理唯一索引、锁和事务都未设计。跨 Worker 的行为约束已经写明，但还没有实现。
 3. `normalizationRuleVersion` 的分配和发布尚未设计。身份规则已经确定。版本固定在版本确定前使用观测身份、`taskId` 和标准化阶段，不使用 `normalizationIdentity` 当查找键。`taskId` 的生成算法仍未设计；同一任务的并发和重试必须使用同一个 `taskId`。`NO_CONVERT` 不是版本号。当前没有可执行的生产规则。
 4. 计算规则正文和计算逻辑身份的最终字段组合都未冻结。旧系统公式不能直接使用。
-5. 哪些字段级失败可以自动进入 `RETRY_WAITING` 未定。`CONTRACT_PATHS_EMPTY` 的任务状态是 `SUCCESS`，并用空路径清单与有字段的成功区分。已写出的领域结果不因后续失败而覆盖。
+5. 哪些字段级失败可以自动进入 `RETRY_WAITING` 未定。`PENDING`、`RETRY_WAITING` 和 `RUNNING` 都可以在无有效阻断时进入 `CANCELLED`，尝试保留见第 11 节，E2E-178 至 E2E-183 未执行。发起者未定义。`CONTRACT_PATHS_EMPTY` 的任务状态是 `SUCCESS`，并用空路径清单与有字段的成功区分。已写出的领域结果不因后续失败或取消而覆盖。
 6. 业务对象标识的来源未定。租户模型未定。`taskId` 和 `replayRequestId` 的生成算法待存储设计。没有稳定事件身份的来源，重复投递规则待来源契约确认。
 7. R12 的设计规则已按 ADR-0004 统一。实际执行和 E2E-026、E2E-155 至 E2E-164 都未执行，不能进入实现验收。06-03-02-03 第 8 节与第 14 节的快照选择措辞差异仍待决，本轮不决定。
 8. 审计身份与字段结果键的跨任务一致性已经在逻辑设计中定义。审计记录的物理存储结构尚未设计。字段结果键仍必须按 `taskId`、`contractVersionId`、`fieldPath` 三个独立字段保存。失败不写入 `ObservedAmount`。拒绝审计、迟到审计和完整性审计不参与终态。
@@ -1270,3 +1297,7 @@ TaskFinalizeResult finalizeTask(TaskFinalizeRequest request)
 ## 36. 第二十一轮完整架构审查
 
 第二十一轮只新增完整架构审查报告，没有修改 Pipeline 主设计规则。第二十轮 P2-02 已关闭，E2E-176 和 E2E-177 已补齐引用缺失的重复投递场景。第二十轮 P3-01 已关闭，第 3.1 节流程图已经覆盖本次引用缺失的分支。第十六轮已有观测恢复顺序未改变。第十八轮稳定事件身份与权威 `rawPayloadRef` 规则未改变。ADR-0004 契约版本解析规则保持一致。未发现新的 P0、P1、P2、P3 问题。P-03、P-06 和 R15 仍然待确认或待决。`parserVersion` 注册发布体系、物理唯一索引、锁、事务、跨 Worker 并发证明和计算规则身份仍未完成设计。E2E-001 至 E2E-177 全部未执行。本轮不冻结 Pipeline 主设计文档。没有执行测试。
+
+## 37. 执行权对齐的取消转换
+
+这一节只补第 11 节原先没有画出的 `PENDING -> CANCELLED` 和 `RETRY_WAITING -> CANCELLED`。`RUNNING -> CANCELLED` 仍在。四种处理终态的判定条件没有改。`CANCELLED` 仍不是这四种处理结果。不另设第二套任务状态字段。E2E-178 至 E2E-183 只记录设计预期，没有执行。谁可以发起取消没有定义。没有正式冻结。没有设计 DDL。没有执行测试。
