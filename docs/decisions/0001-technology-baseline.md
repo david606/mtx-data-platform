@@ -2,6 +2,7 @@
 
 - 状态：已接受
 - 日期：2026-11-22
+- 补充：2026-11-26。只把用户确认的 Kafka Broker 环境版本记入本决策，不改变已接受状态，也不改变客户端版本。
 - 范围：工程初始化。不包含 Pipeline、表结构或调度实现的详细设计。
 
 ## 结论
@@ -12,7 +13,9 @@
 | Spring Boot | 3.5.16 | Spring Boot 从 3.5.5 起声明 Java 25 可用（spring-projects/spring-boot#47245）。Maven Central 上 3.5 线最新补丁是 3.5.16。该线继续使用 JUnit Jupiter 5，与已确认的 JUnit 5 基线一致。 |
 | MyBatis-Plus | 3.5.18.1，构件 `mybatis-plus-spring-boot3-starter` | 3.5.18.1 发布于 2026-10-27，晚于 3.5.18（2026-10-25），并包含 Spring Boot starter 配置隔离修复。Boot 3 starter 导入的 Spring Boot BOM 是 3.5.9，与 3.5.16 属于同一功能线的后续补丁。传递的 MyBatis 版本是 3.5.19；starter 声明的 MyBatis-Spring 是 3.0.6。 |
 | Quartz | 2.5.2 | Spring Boot 3.5.16 BOM 的 `quartz.version`。由 `spring-boot-starter-quartz` 管理，初始化模块尚未引入该 starter。 |
-| Kafka | 客户端 3.9.2，Spring for Apache Kafka 3.3.16 | Spring Boot 3.5.16 BOM 的 `kafka.version` 与 `spring-kafka.version`。消息队列保持 Kafka，初始化模块尚未引入客户端。 |
+| Kafka Broker | 当前外部环境 `kafka_2.13-4.1.2` | 用户确认的服务端发行版。它不是 Maven 依赖。仓库没有 Broker 部署配置，不能把该版本写成仓库已经证明的部署。 |
+| Kafka Java Client | 3.9.2 | Spring Boot 3.5.16 BOM 的 `kafka.version`。消息队列保持 Kafka。该客户端尚未进入模块运行时类路径。 |
+| Spring for Apache Kafka | 3.3.16 | Spring Boot 3.5.16 BOM 的 `spring-kafka.version`。尚未进入模块运行时类路径。 |
 | JUnit | Jupiter 5.12.2 | Spring Boot 3.5.16 BOM 的 `junit-jupiter.version`。 |
 | Doris | 产品基线已确定，驱动版本未锁定 | 尚无连接器模块。不预选未经设计确认的 JDBC 驱动。 |
 | DolphinScheduler | 演进目标，依赖未引入 | 调度适配层和版本都还没有设计。 |
@@ -29,7 +32,9 @@
 
 Spring Boot 3.5 的开源支持已于 2026-06-30 结束。选择 3.5.16 是为了同时满足 JDK 25 和 JUnit 5，不是因为它仍在开源支持窗口内。安全补丁策略需要单独决定：继续使用 3.5 的商业支持，或接受测试栈变为 JUnit Jupiter 6 后迁移到 Spring Boot 4.1。
 
-MyBatis-Plus、Quartz 和 Kafka 目前只在父 POM 的 `dependencyManagement` 中锁定。除 Spring Boot 启动器本身外，初始化模块没有把它们放上运行时类路径。第一次引入对应 starter 时，要用 JDK 25 重新执行 `mvn clean verify`。
+MyBatis-Plus、Quartz、Kafka Java Client 和 Spring for Apache Kafka 目前只在父 POM 的 `dependencyManagement` 中锁定。除 Spring Boot 启动器本身外，初始化模块没有把它们放上运行时类路径。第一次引入对应 starter 时，要用 JDK 25 重新执行 `mvn clean verify`。Kafka Broker `kafka_2.13-4.1.2` 不在这项锁定里。
+
+Broker 与 Client 3.9.2 的协议兼容性目前是有条件确认：Kafka 4.1 文档沿用的 4.0 协议表把 3.x Client 标为 Fully Compatible，4.1.0 至 4.1.2 的升级说明没有宣布 3.x 协议中断。实际连接和消费行为尚未验证，不能把该组合写成已经通过运行时验证。Spring Kafka 通用矩阵写的是 Client 3.8.0 至 3.9.0、Spring Boot 3.4.x；Spring Boot 3.5 坐标表管理的是 Client 3.9.2 与 Spring Kafka 3.3.16；覆盖说明又写 Spring Boot 3.5.x 使用 clients 3.8.x。这三处文字范围不同，不据此改客户端版本。调查见 [06-04-27](../investigation/round-01/06-04/06-04-27%20MTX%20Data%20Platform%20V2%20Kafka%204.1.2%20Broker%20与%20Spring%20Kafka%20客户端兼容性专项调查.md)。
 
 ## 明确不改变的选择
 
