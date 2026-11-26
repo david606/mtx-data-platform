@@ -56,7 +56,7 @@
 | [06-04-09](../06-04-09%20MTX%20Data%20Platform%20V2%20MySQL%208.0.46%20事务边界与故障恢复专项设计.md) | 审计单独提交。响应丢失时重读，不覆盖。故障矩阵未执行。不引入 Inbox、Outbox |
 | [Pipeline 第 11.1 节](../06-03/06-03-03-06%20MTX%20Data%20Platform%20V2%20金额处理%20Pipeline%20集成与端到端处理设计.md) | `BLOCK_IDENTITY_REJECTED` 不等于审计已写入。审计完成与终态是两个状态。三种恢复机制未选定 |
 | [06-04-02](../06-04-02%20MTX%20Data%20Platform%20V2%20工程实施未决设计决策台账.md) | IR-02 待决策、P0。IR-10 待决策、P1。IR-15 待决策、P2 |
-| [ADR-0004](../../decisions/0004-external-contract-version-resolution.md) | 只覆盖金额路径提取之前的外部契约版本解析。不覆盖拒绝审计、发生时点或序列 A |
+| [ADR-0004](../../../decisions/0004-external-contract-version-resolution.md) | 只覆盖金额路径提取之前的外部契约版本解析。不覆盖拒绝审计、发生时点或序列 A |
 
 ## 4. 第一个决策：权威发生时点
 
