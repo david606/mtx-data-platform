@@ -81,7 +81,7 @@ class ModuleArchitectureTest {
                 Set.of(new DeclaredDependency("org.junit.jupiter", "junit-jupiter", "test")),
                 actual.get("platform-common"));
         assertFalse(dependsOn(actual.get("platform-common"), "platform-core"));
-        assertEquals(internal("platform-common"), actual.get("platform-core"));
+        assertEquals(coreDependencies(), actual.get("platform-core"));
         assertEquals(internal("platform-common", "platform-core"), actual.get("platform-messaging"));
         assertEquals(internal("platform-common", "platform-core"), actual.get("platform-connector"));
         assertEquals(internal("platform-common", "platform-core"), actual.get("platform-transform"));
@@ -126,6 +126,12 @@ class ModuleArchitectureTest {
                 new DeclaredDependency("org.springframework.boot", "spring-boot-starter", "compile"),
                 new DeclaredDependency("org.springframework.boot", "spring-boot-starter-actuator", "compile"),
                 new DeclaredDependency("org.springframework.boot", "spring-boot-starter-test", "test")));
+    }
+
+    private static Set<DeclaredDependency> coreDependencies() {
+        Set<DeclaredDependency> dependencies = internal("platform-common");
+        dependencies.add(new DeclaredDependency("org.junit.jupiter", "junit-jupiter", "test"));
+        return dependencies;
     }
 
     private static Set<DeclaredDependency> internal(String... artifactIds) {
