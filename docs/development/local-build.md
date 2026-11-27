@@ -66,6 +66,6 @@
 
 `./mvnw -B verify` 编译、执行现有测试并打包，不删除已有 `target`。`./mvnw -B clean verify` 会先删除构建产物，提交前和 CI 使用这条。CI 命令是 `./mvnw -B clean verify`。
 
-当前测试包括两个应用的 Spring 上下文启动测试，以及 `platform-common` 中的启动校验和模块边界测试。根 POM 的 Enforcer 只要求 JDK `[25,26)`，不全局禁止 Kafka、MyBatis-Plus、MySQL、Doris 或 Quartz。`platform-core` 的 Enforcer 检查直接依赖和传递依赖，禁止 Spring、JDBC、MyBatis、Kafka、Quartz、Redis 和 Doris 客户端进入该模块。其余能力模块没有业务测试类。Maven Failsafe 没有启用。这些命令不连接 Doris、Kafka 或数据库，也没有业务启动参数。
+当前测试包括两个应用的 Spring 上下文启动测试，以及 `platform-common` 中的启动校验和模块边界测试。根 POM 的 Enforcer 只要求 JDK `[25,26)`，不全局禁止 Kafka、MyBatis-Plus、MySQL、Doris 或 Quartz。`platform-core` 的 Enforcer 检查直接依赖和传递依赖，禁止 Spring、整个 `org.springframework.data`、MyBatis、Kafka、Quartz、Redis 和 Doris 客户端进入该模块。其余能力模块没有业务测试类。Maven Failsafe 没有启用。这些命令不连接 Doris、Kafka 或数据库，也没有业务启动参数。
 
 两个应用配置进程名、`mtx.rdp.role`、统一控制台日志和进程内健康状态。`web-application-type` 为 `none`，不提供 HTTP 接口，也不单独保证进程退出。没有数据库、Kafka 或业务接口配置。

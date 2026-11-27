@@ -44,7 +44,7 @@ class ModuleArchitectureTest {
     private static final Set<String> CORE_BANNED_DEPENDENCIES = Set.of(
             "org.springframework:*",
             "org.springframework.boot:*",
-            "org.springframework.data:spring-data-redis",
+            "org.springframework.data:*",
             "org.apache.kafka:*",
             "org.springframework.kafka:*",
             "org.mybatis:*",
@@ -149,7 +149,7 @@ class ModuleArchitectureTest {
     private static void assertRootEnforcerOnlyRequiresJdk25(Element rootPom) {
         Element rules = enforcerRules(rootPom, "require-jdk-25");
         assertEquals("[25,26)", directText(directChild(rules, "requireJavaVersion"), "version"));
-        assertTrue(directChildren(rules, "bannedDependencies").isEmpty());
+        assertTrue(elementsNamed(rootPom, "bannedDependencies").isEmpty());
     }
 
     private static void assertCoreEnforcerCoversTransitiveInfrastructure(Element corePom) {
@@ -307,6 +307,25 @@ class ModuleArchitectureTest {
         List<Element> children = directChildren(parent, localName);
         assertEquals(1, children.size(), localName);
         return children.getFirst();
+    }
+
+    private static List<Element> elementsNamed(Element parent, String localName) {
+        List<Element> found = new ArrayList<>();
+        collectNamed(parent, localName, found);
+        return found;
+    }
+
+    private static void collectNamed(Element parent, String localName, List<Element> found) {
+        Node node = parent.getFirstChild();
+        while (node != null) {
+            if (node instanceof Element element) {
+                if (localName.equals(element.getLocalName())) {
+                    found.add(element);
+                }
+                collectNamed(element, localName, found);
+            }
+            node = node.getNextSibling();
+        }
     }
 
     private static List<Element> directChildren(Element parent, String localName) {

@@ -41,7 +41,7 @@
                                     <excludes>
                                         <exclude>org.springframework:*</exclude>
                                         <exclude>org.springframework.boot:*</exclude>
-                                        <exclude>org.springframework.data:spring-data-redis</exclude>
+                                        <exclude>org.springframework.data:*</exclude>
                                         <exclude>org.apache.kafka:*</exclude>
                                         <exclude>org.springframework.kafka:*</exclude>
                                         <exclude>org.mybatis:*</exclude>
