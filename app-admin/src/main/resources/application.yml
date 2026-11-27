@@ -1,3 +1,19 @@
 spring:
   application:
     name: mtx-rdp-admin
+  main:
+    web-application-type: none
+    banner-mode: off
+
+logging:
+  pattern:
+    console: "%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX} %-5level [%thread] %logger{40} - %msg%n"
+
+mtx:
+  rdp:
+    role: admin
+
+management:
+  endpoint:
+    health:
+      show-details: never

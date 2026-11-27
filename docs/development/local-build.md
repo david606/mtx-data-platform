@@ -66,6 +66,6 @@
 
 `./mvnw -B verify` 编译、执行现有测试并打包，不删除已有 `target`。`./mvnw -B clean verify` 会先删除构建产物，提交前和 CI 使用这条。CI 命令是 `./mvnw -B clean verify`。
 
-当前测试只有 `app-admin` 与 `app-worker` 的 Spring 上下文启动测试。八个能力模块没有测试类。Maven Failsafe 没有启用。这些命令不连接 Doris、Kafka 或数据库，也没有业务启动参数。
+当前测试包括两个应用的 Spring 上下文启动测试，以及 `platform-common` 中的启动校验和模块边界测试。`platform-core` 用 Enforcer 禁止基础设施框架进入类路径。其余能力模块没有业务测试类。Maven Failsafe 没有启用。这些命令不连接 Doris、Kafka 或数据库，也没有业务启动参数。
 
-当前配置只有两个应用名：`app-admin/src/main/resources/application.yml` 中的 `mtx-rdp-admin`，以及 `app-worker/src/main/resources/application.yml` 中的 `mtx-rdp-worker`。没有数据库、Kafka 或业务接口配置。
+两个应用配置进程名、`mtx.rdp.role`、统一控制台日志和进程内健康状态。`web-application-type` 为 `none`，不提供 HTTP 接口。没有数据库、Kafka 或业务接口配置。

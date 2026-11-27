@@ -47,7 +47,7 @@ MTX Data Platform（MTX RDP）是面向连锁餐饮企业的统一数据平台�
 
 `app-admin` 是管理端，启动类为 `com.mtx.rdp.admin.AdminApplication`。`app-worker` 是执行端，启动类为 `com.mtx.rdp.worker.WorkerApplication`。两者互不依赖。
 
-`rdp-common` 与 `rdp-server` 已从当前工程删除，不参与聚合。旧代码留在 Git 历史中，不迁移进十个模块。当前骨架没有业务 Controller、任务处理、Kafka 监听、数据库配置或 Pipeline 实现。
+`rdp-common` 与 `rdp-server` 已从当前工程删除，不参与聚合。旧代码留在 Git 历史中，不迁移进十个模块。两个应用会在启动时核对进程名、职责和进程内健康状态，随后退出。当前骨架没有业务 Controller、任务处理、Kafka 监听、数据库配置或 Pipeline 实现。
 
 ## 本地构建
 

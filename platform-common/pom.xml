@@ -14,4 +14,12 @@
     <artifactId>platform-common</artifactId>
     <name>platform-common</name>
     <description>Shared types with no framework or internal module dependencies.</description>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
 </project>

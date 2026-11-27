@@ -21,4 +21,42 @@
             <artifactId>platform-common</artifactId>
         </dependency>
     </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-enforcer-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>ban-infrastructure-frameworks</id>
+                        <goals>
+                            <goal>enforce</goal>
+                        </goals>
+                        <configuration>
+                            <rules>
+                                <bannedDependencies>
+                                    <searchTransitive>true</searchTransitive>
+                                    <excludes>
+                                        <exclude>org.springframework:*</exclude>
+                                        <exclude>org.springframework.boot:*</exclude>
+                                        <exclude>org.apache.kafka:*</exclude>
+                                        <exclude>org.springframework.kafka:*</exclude>
+                                        <exclude>org.mybatis:*</exclude>
+                                        <exclude>com.baomidou:*</exclude>
+                                        <exclude>org.quartz-scheduler:*</exclude>
+                                        <exclude>redis.clients:*</exclude>
+                                        <exclude>io.lettuce:*</exclude>
+                                        <exclude>com.mysql:*</exclude>
+                                        <exclude>org.flywaydb:*</exclude>
+                                        <exclude>org.apache.doris:*</exclude>
+                                    </excludes>
+                                </bannedDependencies>
+                            </rules>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
 </project>

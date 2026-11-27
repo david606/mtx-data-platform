@@ -160,6 +160,27 @@
                                 <requireJavaVersion>
                                     <version>[25,26)</version>
                                 </requireJavaVersion>
+                                <bannedDependencies>
+                                    <searchTransitive>true</searchTransitive>
+                                    <excludes>
+                                        <exclude>com.mysql:*</exclude>
+                                        <exclude>org.flywaydb:*</exclude>
+                                        <exclude>redis.clients:*</exclude>
+                                        <exclude>io.lettuce:*</exclude>
+                                        <exclude>org.springframework.data:spring-data-redis</exclude>
+                                        <exclude>org.apache.kafka:*</exclude>
+                                        <exclude>org.springframework.kafka:*</exclude>
+                                        <exclude>org.quartz-scheduler:*</exclude>
+                                        <exclude>org.apache.dolphinscheduler:*</exclude>
+                                        <exclude>com.baomidou:*</exclude>
+                                        <exclude>org.mybatis:*</exclude>
+                                        <exclude>org.apache.doris:*</exclude>
+                                        <exclude>org.springframework.boot:spring-boot-starter-jdbc</exclude>
+                                        <exclude>org.springframework.boot:spring-boot-starter-data-redis</exclude>
+                                        <exclude>org.springframework.boot:spring-boot-starter-quartz</exclude>
+                                        <exclude>org.springframework.boot:spring-boot-starter-amqp</exclude>
+                                    </excludes>
+                                </bannedDependencies>
                             </rules>
                         </configuration>
                     </execution>
