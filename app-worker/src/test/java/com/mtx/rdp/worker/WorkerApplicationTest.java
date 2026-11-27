@@ -11,6 +11,7 @@ import org.springframework.boot.actuate.health.HealthEndpoint;
 import org.springframework.boot.actuate.health.Status;
 import org.springframework.boot.builder.SpringApplicationBuilder;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.core.env.Environment;
 
 @SpringBootTest
@@ -31,9 +32,12 @@ class WorkerApplicationTest {
 
     @Test
     void rejectsAdminRoleOnWorkerProcess() {
-        RuntimeException failure = assertThrows(RuntimeException.class, () ->
-                new SpringApplicationBuilder(WorkerApplication.class)
-                        .run("--mtx.rdp.role=admin"));
+        RuntimeException failure = assertThrows(RuntimeException.class, () -> {
+            try (ConfigurableApplicationContext context = new SpringApplicationBuilder(WorkerApplication.class)
+                    .run("--mtx.rdp.role=admin")) {
+                context.stop();
+            }
+        });
 
         assertInstanceOf(PlatformConfigurationException.class, rootCause(failure));
     }

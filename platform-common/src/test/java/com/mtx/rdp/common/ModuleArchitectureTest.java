@@ -24,7 +24,8 @@ import org.w3c.dom.Node;
 import org.xml.sax.SAXException;
 
 /**
- * 读取反应器 POM，核对 ADR-0002 的模块名单和直接依赖。允许集合写在测试里，断言比较的是文件内容。
+ * 读取反应器 POM。十模块、依赖方向、Core 隔离和 Pipeline 边界是持续约束。
+ * 各模块的精确依赖集合只表示当前基线；按 ADR 增加依赖时要同步更新对应预期，不能靠根 POM 全局禁止。
  */
 class ModuleArchitectureTest {
 
@@ -40,16 +41,20 @@ class ModuleArchitectureTest {
             "app-admin",
             "app-worker");
 
-    private static final Set<String> BANNED_ARTIFACTS = Set.of(
-            "mybatis-plus-spring-boot3-starter",
-            "mysql-connector-j",
-            "spring-boot-starter-jdbc",
-            "spring-boot-starter-data-redis",
-            "spring-boot-starter-quartz",
-            "spring-boot-starter-amqp",
-            "spring-kafka",
-            "kafka-clients",
-            "flyway-core");
+    private static final Set<String> CORE_BANNED_DEPENDENCIES = Set.of(
+            "org.springframework:*",
+            "org.springframework.boot:*",
+            "org.springframework.data:spring-data-redis",
+            "org.apache.kafka:*",
+            "org.springframework.kafka:*",
+            "org.mybatis:*",
+            "com.baomidou:*",
+            "org.quartz-scheduler:*",
+            "redis.clients:*",
+            "io.lettuce:*",
+            "com.mysql:*",
+            "org.flywaydb:*",
+            "org.apache.doris:*");
 
     @Test
     void reactorMatchesApprovedModuleBoundaries() throws Exception {
@@ -61,6 +66,7 @@ class ModuleArchitectureTest {
         assertEquals(aggregated.size(), new HashSet<>(aggregated).size());
         assertEquals(MODULES, childModulesWithPom(root));
         assertTrue(directChildren(rootPom, "dependencies").isEmpty());
+        assertRootEnforcerOnlyRequiresJdk25(rootPom);
 
         Map<String, Set<DeclaredDependency>> actual = new LinkedHashMap<>();
         for (String module : aggregated) {
@@ -88,10 +94,10 @@ class ModuleArchitectureTest {
         assertFalse(dependsOn(actual.get("app-admin"), "app-worker"));
         assertFalse(dependsOn(actual.get("app-worker"), "app-admin"));
         assertAcyclic(actual);
-        assertBannedArtifactsAbsent(actual);
         assertCoreHasNoInfrastructureGroup(actual.get("platform-core"));
+        assertCoreEnforcerCoversTransitiveInfrastructure(parse(root.resolve("platform-core/pom.xml")));
         assertPipelineDoesNotReachImplementations(actual.get("platform-pipeline"));
-        assertMyBatisPlusIsManagedButNotUsed(rootPom, actual);
+        assertMyBatisPlusVersionRemainsManaged(rootPom);
     }
 
     private static Set<DeclaredDependency> adminDependencies() {
@@ -140,13 +146,38 @@ class ModuleArchitectureTest {
         }
     }
 
-    private static void assertBannedArtifactsAbsent(Map<String, Set<DeclaredDependency>> actual) {
-        for (Set<DeclaredDependency> dependencies : actual.values()) {
-            for (DeclaredDependency dependency : dependencies) {
-                assertFalse(BANNED_ARTIFACTS.contains(dependency.artifactId()), dependency.artifactId());
-                assertFalse(dependency.groupId().contains("dolphinscheduler"), dependency.groupId());
+    private static void assertRootEnforcerOnlyRequiresJdk25(Element rootPom) {
+        Element rules = enforcerRules(rootPom, "require-jdk-25");
+        assertEquals("[25,26)", directText(directChild(rules, "requireJavaVersion"), "version"));
+        assertTrue(directChildren(rules, "bannedDependencies").isEmpty());
+    }
+
+    private static void assertCoreEnforcerCoversTransitiveInfrastructure(Element corePom) {
+        Element rules = enforcerRules(corePom, "ban-infrastructure-frameworks");
+        Element banned = directChild(rules, "bannedDependencies");
+        assertEquals("true", directText(banned, "searchTransitive"));
+        assertEquals(CORE_BANNED_DEPENDENCIES, Set.copyOf(textChildren(directChild(banned, "excludes"), "exclude")));
+    }
+
+    private static Element enforcerRules(Element pom, String executionId) {
+        Element plugins = directChild(directChild(pom, "build"), "plugins");
+        Element enforcer = null;
+        for (Element plugin : directChildren(plugins, "plugin")) {
+            if ("maven-enforcer-plugin".equals(directText(plugin, "artifactId"))) {
+                enforcer = plugin;
+                break;
             }
         }
+        if (enforcer == null) {
+            throw new AssertionError("缺少 maven-enforcer-plugin");
+        }
+        Element executions = directChild(enforcer, "executions");
+        for (Element execution : directChildren(executions, "execution")) {
+            if (executionId.equals(directText(execution, "id"))) {
+                return directChild(directChild(execution, "configuration"), "rules");
+            }
+        }
+        throw new AssertionError("缺少 Enforcer 执行: " + executionId);
     }
 
     private static void assertCoreHasNoInfrastructureGroup(Set<DeclaredDependency> dependencies) {
@@ -175,21 +206,15 @@ class ModuleArchitectureTest {
         }
     }
 
-    private static void assertMyBatisPlusIsManagedButNotUsed(
-            Element rootPom,
-            Map<String, Set<DeclaredDependency>> actual) {
+    private static void assertMyBatisPlusVersionRemainsManaged(Element rootPom) {
         Element managed = directChild(directChild(rootPom, "dependencyManagement"), "dependencies");
-        List<Element> managedDependencies = directChildren(managed, "dependency");
         boolean mybatisManaged = false;
-        for (Element dependency : managedDependencies) {
+        for (Element dependency : directChildren(managed, "dependency")) {
             if ("mybatis-plus-spring-boot3-starter".equals(directText(dependency, "artifactId"))) {
                 mybatisManaged = true;
             }
         }
         assertTrue(mybatisManaged);
-        for (Set<DeclaredDependency> dependencies : actual.values()) {
-            assertFalse(dependsOn(dependencies, "mybatis-plus-spring-boot3-starter"));
-        }
     }
 
     private static void assertAcyclic(Map<String, Set<DeclaredDependency>> actual) {

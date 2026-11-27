@@ -35,11 +35,13 @@
                         </goals>
                         <configuration>
                             <rules>
+                                <!-- 只约束本模块。searchTransitive 同时检查直接依赖和传递依赖。 -->
                                 <bannedDependencies>
                                     <searchTransitive>true</searchTransitive>
                                     <excludes>
                                         <exclude>org.springframework:*</exclude>
                                         <exclude>org.springframework.boot:*</exclude>
+                                        <exclude>org.springframework.data:spring-data-redis</exclude>
                                         <exclude>org.apache.kafka:*</exclude>
                                         <exclude>org.springframework.kafka:*</exclude>
                                         <exclude>org.mybatis:*</exclude>

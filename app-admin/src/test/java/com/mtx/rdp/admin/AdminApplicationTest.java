@@ -7,10 +7,11 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import com.mtx.rdp.common.PlatformConfigurationException;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.builder.SpringApplicationBuilder;
 import org.springframework.boot.actuate.health.HealthEndpoint;
 import org.springframework.boot.actuate.health.Status;
+import org.springframework.boot.builder.SpringApplicationBuilder;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.core.env.Environment;
 
 @SpringBootTest
@@ -31,9 +32,12 @@ class AdminApplicationTest {
 
     @Test
     void rejectsWorkerRoleOnAdminProcess() {
-        RuntimeException failure = assertThrows(RuntimeException.class, () ->
-                new SpringApplicationBuilder(AdminApplication.class)
-                        .run("--mtx.rdp.role=worker"));
+        RuntimeException failure = assertThrows(RuntimeException.class, () -> {
+            try (ConfigurableApplicationContext context = new SpringApplicationBuilder(AdminApplication.class)
+                    .run("--mtx.rdp.role=worker")) {
+                context.stop();
+            }
+        });
 
         assertInstanceOf(PlatformConfigurationException.class, rootCause(failure));
     }
