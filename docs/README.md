@@ -8,7 +8,7 @@
 | [design](design/) | 经评审的详细设计 | 尚无正式设计，目录仅作占位 |
 | [database](database/) | 元数据与 Doris 的库表说明 | 尚无已确认模型 |
 | [api](api/) | 对外或模块间接口说明 | 尚无已确认契约 |
-| [development](development/) | 本地开发、构建和调试约定，以及工程准入评估 | 已写入 JDK 25 构建说明和 [当前工程准入边界与下一阶段实施路线评估](development/当前工程准入边界与下一阶段实施路线评估.md) |
+| [development](development/) | 本地开发、构建和调试约定，以及工程准入评估 | 已写入 JDK 25 构建说明、[当前工程准入边界与下一阶段实施路线评估](development/当前工程准入边界与下一阶段实施路线评估.md) 和 [Stage C 第一轮架构骨架落地路线与端到端链路规划](development/Stage-C-第一轮架构骨架落地路线与端到端链路规划.md) |
 | [deployment](deployment/) | 部署拓扑与发布步骤 | 尚无已确认部署方案 |
 | [operations](operations/) | 运行、告警和排障 | 尚无已确认运行手册 |
 | [decisions](decisions/) | 架构与技术基线决策 | 已记录版本锁定 |
