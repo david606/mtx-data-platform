@@ -15,7 +15,7 @@ import java.util.Properties;
 /**
  * DEV_ONLY 测试表访问。同一 Kafka 位点不插入第二行。这不是正式 Create-or-Get。
  */
-public final class DevOnlyMysqlStore implements AutoCloseable {
+public final class DevOnlyMysqlStore implements AutoCloseable, DevOnlyTaskBook {
 
     private final DevOnlyChainSettings settings;
     private Connection connection;
@@ -49,12 +49,12 @@ public final class DevOnlyMysqlStore implements AutoCloseable {
     public ExistingRow findByPosition(String topic, int partition, long offset) {
         String sql = """
                 SELECT raw_message.raw_message_ref, task.test_task_id, task.status
-                FROM mtx_rdp_dev_only.dev_only_raw_message raw_message
-                JOIN mtx_rdp_dev_only.dev_only_task task
+                FROM %s raw_message
+                JOIN %s task
                   ON task.raw_message_ref = raw_message.raw_message_ref
                 WHERE raw_message.kafka_topic = ? AND raw_message.kafka_partition = ?
                   AND raw_message.kafka_offset = ? AND raw_message.dev_only = 1 AND task.dev_only = 1
-                """;
+                """.formatted(table("dev_only_raw_message"), table("dev_only_task"));
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setString(1, topic);
             statement.setInt(2, partition);
@@ -90,10 +90,10 @@ public final class DevOnlyMysqlStore implements AutoCloseable {
 
     public boolean claim(String taskId, Instant claimedAt) {
         String sql = """
-                UPDATE mtx_rdp_dev_only.dev_only_task
+                UPDATE %s
                 SET status = 'CLAIMED', claimed_at = ?
                 WHERE test_task_id = ? AND dev_only = 1 AND status = 'READY'
-                """;
+                """.formatted(table("dev_only_task"));
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setTimestamp(1, Timestamp.from(claimedAt));
             statement.setString(2, taskId);
@@ -103,20 +103,54 @@ public final class DevOnlyMysqlStore implements AutoCloseable {
         }
     }
 
-    public void markCompleted(String taskId, Instant finishedAt) {
-        updateFinish(taskId, "COMPLETED", finishedAt, null);
+    public void beginRun(String runId, String taskId, Instant startedAt) {
+        try {
+            insertRun(runId, taskId, null, startedAt);
+        } catch (SQLException exception) {
+            throw new IllegalStateException("写入 DEV_ONLY 执行记录失败", exception);
+        }
     }
 
-    public void markFailed(String taskId, Instant finishedAt, String reason) {
-        updateFinish(taskId, "FAILED", finishedAt, limit(reason));
+    @Override
+    public boolean reopenFailed(String taskId, String newRunId, Instant claimedAt) {
+        try {
+            connection.setAutoCommit(false);
+            TaskView task = lockTask(taskId);
+            if (DevOnlyRetryGuard.rejection(task) != null) {
+                connection.rollback();
+                return false;
+            }
+            insertRun(newRunId, taskId, task.failureReason(), claimedAt);
+            if (claimFromFailed(taskId, claimedAt) != 1) {
+                connection.rollback();
+                return false;
+            }
+            connection.commit();
+            return true;
+        } catch (SQLException exception) {
+            rollback();
+            throw new IllegalStateException("重新进入 FAILED 测试任务失败", exception);
+        } finally {
+            enableAutoCommit();
+        }
+    }
+
+    @Override
+    public void markCompleted(String taskId, String runId, Instant finishedAt) {
+        updateFinish(taskId, runId, "COMPLETED", finishedAt, null, true);
+    }
+
+    @Override
+    public void markFailed(String taskId, String runId, Instant finishedAt, String reason) {
+        updateFinish(taskId, runId, "FAILED", finishedAt, limit(reason), false);
     }
 
     public TaskView findTask(String taskId) {
         String sql = """
                 SELECT test_task_id, raw_message_ref, dev_only, status, failure_reason
-                FROM mtx_rdp_dev_only.dev_only_task
+                FROM %s
                 WHERE test_task_id = ?
-                """;
+                """.formatted(table("dev_only_task"));
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setString(1, taskId);
             try (ResultSet rows = statement.executeQuery()) {
@@ -134,9 +168,9 @@ public final class DevOnlyMysqlStore implements AutoCloseable {
     public RawView findRaw(String rawRef) {
         String sql = """
                 SELECT raw_message_ref, dev_only, kafka_topic, kafka_partition, kafka_offset
-                FROM mtx_rdp_dev_only.dev_only_raw_message
+                FROM %s
                 WHERE raw_message_ref = ?
-                """;
+                """.formatted(table("dev_only_raw_message"));
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setString(1, rawRef);
             try (ResultSet rows = statement.executeQuery()) {
@@ -166,10 +200,10 @@ public final class DevOnlyMysqlStore implements AutoCloseable {
             String rawRef, byte[] payload, String topic, int partition, long offset, Instant receivedAt)
             throws SQLException {
         String sql = """
-                INSERT INTO mtx_rdp_dev_only.dev_only_raw_message
+                INSERT INTO %s
                 (raw_message_ref, dev_only, payload, kafka_topic, kafka_partition, kafka_offset, received_at, created_at)
                 VALUES (?, 1, ?, ?, ?, ?, ?, ?)
-                """;
+                """.formatted(table("dev_only_raw_message"));
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setString(1, rawRef);
             statement.setBytes(2, payload);
@@ -184,10 +218,10 @@ public final class DevOnlyMysqlStore implements AutoCloseable {
 
     private void insertTask(String taskId, String rawRef, Instant createdAt) throws SQLException {
         String sql = """
-                INSERT INTO mtx_rdp_dev_only.dev_only_task
+                INSERT INTO %s
                 (test_task_id, raw_message_ref, dev_only, status, created_at)
                 VALUES (?, ?, 1, 'READY', ?)
-                """;
+                """.formatted(table("dev_only_task"));
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setString(1, taskId);
             statement.setString(2, rawRef);
@@ -196,27 +230,117 @@ public final class DevOnlyMysqlStore implements AutoCloseable {
         }
     }
 
-    private void updateFinish(String taskId, String status, Instant finishedAt, String reason) {
-        String sql = """
-                UPDATE mtx_rdp_dev_only.dev_only_task
+    private void updateFinish(
+            String taskId, String runId, String status, Instant finishedAt, String reason, boolean keepTaskFailure) {
+        String taskSql = keepTaskFailure
+                ? """
+                UPDATE %s
+                SET status = ?, finished_at = ?
+                WHERE test_task_id = ? AND dev_only = 1 AND status = 'CLAIMED'
+                """.formatted(table("dev_only_task"))
+                : """
+                UPDATE %s
                 SET status = ?, finished_at = ?, failure_reason = ?
                 WHERE test_task_id = ? AND dev_only = 1 AND status = 'CLAIMED'
-                """;
-        try (PreparedStatement statement = connection.prepareStatement(sql)) {
-            statement.setString(1, status);
-            statement.setTimestamp(2, Timestamp.from(finishedAt));
-            statement.setString(3, reason);
-            statement.setString(4, taskId);
-            if (statement.executeUpdate() != 1) {
-                throw new IllegalStateException("DEV_ONLY 测试任务不在已领取状态，不能写成 " + status);
+                """.formatted(table("dev_only_task"));
+        String runSql = """
+                UPDATE %s
+                SET outcome = ?, finished_at = ?, failure_reason = COALESCE(?, failure_reason)
+                WHERE run_id = ? AND dev_only = 1 AND outcome = 'STARTED'
+                """.formatted(table("dev_only_task_run"));
+        try {
+            connection.setAutoCommit(false);
+            int tasks;
+            try (PreparedStatement statement = connection.prepareStatement(taskSql)) {
+                statement.setString(1, status);
+                statement.setTimestamp(2, Timestamp.from(finishedAt));
+                if (keepTaskFailure) {
+                    statement.setString(3, taskId);
+                } else {
+                    statement.setString(3, reason);
+                    statement.setString(4, taskId);
+                }
+                tasks = statement.executeUpdate();
             }
+            int runs;
+            try (PreparedStatement statement = connection.prepareStatement(runSql)) {
+                statement.setString(1, status);
+                statement.setTimestamp(2, Timestamp.from(finishedAt));
+                statement.setString(3, reason);
+                statement.setString(4, runId);
+                runs = statement.executeUpdate();
+            }
+            if (tasks != 1 || runs != 1) {
+                connection.rollback();
+                throw new IllegalStateException("DEV_ONLY 测试任务不在可结束状态，不能写成 " + status);
+            }
+            connection.commit();
         } catch (SQLException exception) {
+            rollback();
             throw new IllegalStateException("更新 DEV_ONLY 测试任务状态失败", exception);
+        } finally {
+            enableAutoCommit();
         }
     }
 
+    private TaskView lockTask(String taskId) throws SQLException {
+        String sql = """
+                SELECT test_task_id, raw_message_ref, dev_only, status, failure_reason
+                FROM %s
+                WHERE test_task_id = ?
+                FOR UPDATE
+                """.formatted(table("dev_only_task"));
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setString(1, taskId);
+            try (ResultSet rows = statement.executeQuery()) {
+                if (!rows.next()) {
+                    return null;
+                }
+                return new TaskView(rows.getString(1), rows.getString(2), rows.getInt(3),
+                        rows.getString(4), rows.getString(5));
+            }
+        }
+    }
+
+    private int claimFromFailed(String taskId, Instant claimedAt) throws SQLException {
+        String sql = """
+                UPDATE %s
+                SET status = 'CLAIMED', claimed_at = ?
+                WHERE test_task_id = ? AND dev_only = 1 AND status = 'FAILED'
+                """.formatted(table("dev_only_task"));
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setTimestamp(1, Timestamp.from(claimedAt));
+            statement.setString(2, taskId);
+            return statement.executeUpdate();
+        }
+    }
+
+    private void insertRun(String runId, String taskId, String priorFailure, Instant startedAt) throws SQLException {
+        String sql = """
+                INSERT INTO %s
+                (run_id, test_task_id, dev_only, prior_failure_reason, outcome, started_at)
+                VALUES (?, ?, 1, ?, 'STARTED', ?)
+                """.formatted(table("dev_only_task_run"));
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setString(1, runId);
+            statement.setString(2, taskId);
+            statement.setString(3, priorFailure);
+            statement.setTimestamp(4, Timestamp.from(startedAt));
+            statement.executeUpdate();
+        }
+    }
+
+    private String table(String table) {
+        if (!"dev_only_raw_message".equals(table) && !"dev_only_task".equals(table)
+                && !"dev_only_task_run".equals(table)) {
+            throw new IllegalArgumentException("DEV_ONLY 表名不被允许");
+        }
+        return DevOnlyDatabaseName.require(settings.mysqlDatabase()) + "." + table;
+    }
+
     private void executeScript(String resource) {
-        String script = read(resource);
+        String database = DevOnlyDatabaseName.require(settings.mysqlDatabase());
+        String script = read(resource).replace("__DEV_ONLY_DATABASE__", database);
         try (Statement statement = connection.createStatement()) {
             for (String command : script.split(";")) {
                 String sql = stripComments(command).trim();

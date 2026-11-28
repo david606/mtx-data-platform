@@ -18,7 +18,18 @@ public final class DevOnlyChainMain {
             System.err.println("缺少环境变量: " + String.join(", ", missing));
             System.exit(2);
         }
-        DevOnlyRunReport report = new DevOnlyChainRunner().run(DevOnlyChainSettings.from(environment));
+        DevOnlyChainRunner runner = new DevOnlyChainRunner();
+        DevOnlyChainSettings settings = DevOnlyChainSettings.from(environment);
+        DevOnlyRunReport report;
+        if (args.length == 0) {
+            report = runner.run(settings);
+        } else if (args.length == 2 && "rerun-failed".equals(args[0])) {
+            report = runner.rerunFailed(settings, args[1]);
+        } else {
+            System.err.println("用法: DevOnlyChainMain [rerun-failed testTaskId]");
+            System.exit(2);
+            return;
+        }
         System.out.print(report.toDisplayString());
         if (!report.success()) {
             System.exit(1);

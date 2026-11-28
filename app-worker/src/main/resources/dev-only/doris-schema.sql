@@ -1,4 +1,4 @@
-CREATE TABLE IF NOT EXISTS mtx_rdp_dev_only.dev_only_result (
+CREATE TABLE IF NOT EXISTS __DEV_ONLY_DATABASE__.dev_only_result (
     dev_run_id VARCHAR(64) NOT NULL,
     dev_only BOOLEAN NOT NULL,
     test_task_id VARCHAR(64) NOT NULL,

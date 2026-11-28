@@ -10,10 +10,11 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Base64;
 import java.util.Optional;
+import java.util.Set;
 
 /**
  * 用 JDK HTTP 客户端调用 Doris FE Stream Load。不引入 Doris Java 客户端。
- * 认证信息只放在请求头，不进入异常文本。
+ * 认证信息只放在请求头，不进入异常文本。重定向只发往预先允许的 BE。
  */
 public final class DorisStreamLoadWriter {
 
@@ -31,13 +32,21 @@ public final class DorisStreamLoadWriter {
     private final int feHttpPort;
     private final String username;
     private final String password;
+    private final Set<DorisBeEndpoint> allowedBackends;
 
-    public DorisStreamLoadWriter(String feHost, int feHttpPort, String username, String password) {
+    public DorisStreamLoadWriter(
+            String feHost, int feHttpPort, String username, String password, Set<DorisBeEndpoint> allowedBackends) {
         this(HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NEVER).build(),
-                feHost, feHttpPort, username, password);
+                feHost, feHttpPort, username, password, allowedBackends);
     }
 
-    DorisStreamLoadWriter(HttpClient client, String feHost, int feHttpPort, String username, String password) {
+    DorisStreamLoadWriter(
+            HttpClient client,
+            String feHost,
+            int feHttpPort,
+            String username,
+            String password,
+            Set<DorisBeEndpoint> allowedBackends) {
         if (client == null) {
             throw new IllegalArgumentException("HTTP 客户端不能为空");
         }
@@ -48,11 +57,15 @@ public final class DorisStreamLoadWriter {
         if (password == null || password.isBlank()) {
             throw new IllegalArgumentException("Doris 密码不能为空");
         }
+        if (allowedBackends == null) {
+            throw new IllegalArgumentException("Doris BE 允许列表不能为空");
+        }
         this.client = client;
         this.feHost = feHost;
         this.feHttpPort = feHttpPort;
         this.username = username;
         this.password = password;
+        this.allowedBackends = Set.copyOf(allowedBackends);
     }
 
     public DorisStreamLoadResult load(String database, String table, String label, byte[] body) {
@@ -70,15 +83,50 @@ public final class DorisStreamLoadWriter {
                 if (location.isEmpty()) {
                     return DorisStreamLoadResult.failure(response.statusCode(), "", "Doris 重定向缺少 Location");
                 }
-                response = send(withoutUserInfo(URI.create(location.get())), label, body);
+                response = send(acceptedTarget(location.get()), label, body);
             }
             return interpret(response);
+        } catch (RedirectRejected rejected) {
+            return DorisStreamLoadResult.failure(0, "", rejected.getMessage());
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
             return DorisStreamLoadResult.failure(0, "", "Doris Stream Load 被中断");
         } catch (IOException exception) {
             return DorisStreamLoadResult.failure(0, "", "Doris Stream Load 请求失败");
+        } catch (IllegalArgumentException exception) {
+            return DorisStreamLoadResult.failure(0, "", "Doris 重定向地址无效");
         }
+    }
+
+    private URI acceptedTarget(String location) throws RedirectRejected {
+        URI uri;
+        try {
+            uri = URI.create(location);
+        } catch (IllegalArgumentException exception) {
+            throw new RedirectRejected("Doris 重定向地址无效");
+        }
+        if (!"http".equals(uri.getScheme())) {
+            throw new RedirectRejected("Doris 重定向协议不被允许");
+        }
+        String host = uri.getHost();
+        int port = uri.getPort();
+        if (host == null || port <= 0 || !allowed(host, port)) {
+            throw new RedirectRejected("Doris 重定向目标不在允许范围内");
+        }
+        try {
+            return withoutUserInfo(uri);
+        } catch (IllegalArgumentException exception) {
+            throw new RedirectRejected("Doris 重定向地址无效");
+        }
+    }
+
+    private boolean allowed(String host, int port) {
+        for (DorisBeEndpoint endpoint : allowedBackends) {
+            if (endpoint.host().equalsIgnoreCase(host) && endpoint.port() == port) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private HttpResponse<byte[]> send(URI uri, String label, byte[] body) throws IOException, InterruptedException {
@@ -129,6 +177,13 @@ public final class DorisStreamLoadWriter {
 
     private static boolean isRedirect(int status) {
         return status == 301 || status == 302 || status == 307 || status == 308;
+    }
+
+    private static final class RedirectRejected extends Exception {
+
+        private RedirectRejected(String message) {
+            super(message);
+        }
     }
 
     static URI withoutUserInfo(URI uri) {

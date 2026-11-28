@@ -1,5 +1,6 @@
 package com.mtx.rdp.worker.devonly;
 
+import com.mtx.rdp.writer.devonly.DorisBeEndpoint;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -19,19 +20,28 @@ public record DevOnlyChainSettings(
         int dorisQueryPort,
         String dorisDatabase,
         String dorisUser,
-        String dorisPassword) {
+        String dorisPassword,
+        List<DorisBeEndpoint> dorisBeTargets) {
 
     public static final String MYSQL_USER = "MTX_RDP_DEV_MYSQL_USER";
     public static final String MYSQL_PASSWORD = "MTX_RDP_DEV_MYSQL_PASSWORD";
     public static final String DORIS_USER = "MTX_RDP_DEV_DORIS_USER";
     public static final String DORIS_PASSWORD = "MTX_RDP_DEV_DORIS_PASSWORD";
 
+    public static final String DEFAULT_DORIS_BE = "192.168.1.50:8040,192.168.1.51:8040";
+
     public DevOnlyChainSettings {
+        mysqlDatabase = DevOnlyDatabaseName.require(mysqlDatabase);
+        dorisDatabase = DevOnlyDatabaseName.require(dorisDatabase);
         rejectRoot(mysqlUser, "MySQL");
         rejectRoot(dorisUser, "Doris");
         if (mysqlPassword == null || mysqlPassword.isBlank() || dorisPassword == null || dorisPassword.isBlank()) {
             throw new IllegalArgumentException("MySQL 和 Doris 密码不能为空");
         }
+        if (dorisBeTargets == null || dorisBeTargets.isEmpty()) {
+            throw new IllegalArgumentException("至少需要一个 Doris BE 地址");
+        }
+        dorisBeTargets = List.copyOf(dorisBeTargets);
     }
 
     public static List<String> missingCredentialNames(Map<String, String> environment) {
@@ -60,7 +70,8 @@ public record DevOnlyChainSettings(
                 integer(environment, "MTX_RDP_DEV_DORIS_QUERY_PORT", 9030),
                 value(environment, "MTX_RDP_DEV_DORIS_DATABASE", "mtx_rdp_dev_only"),
                 environment.get(DORIS_USER),
-                environment.get(DORIS_PASSWORD));
+                environment.get(DORIS_PASSWORD),
+                beTargets(environment));
     }
 
     private static void addIfBlank(List<String> missing, Map<String, String> environment, String name) {
@@ -76,6 +87,26 @@ public record DevOnlyChainSettings(
             return fallback;
         }
         return value;
+    }
+
+    private static List<DorisBeEndpoint> beTargets(Map<String, String> environment) {
+        String raw = value(environment, "MTX_RDP_DEV_DORIS_BE", DEFAULT_DORIS_BE);
+        List<DorisBeEndpoint> targets = new ArrayList<>();
+        for (String item : raw.split(",")) {
+            String token = item.trim();
+            int colon = token.lastIndexOf(':');
+            if (colon <= 0 || colon == token.length() - 1) {
+                throw new IllegalArgumentException("Doris BE 地址无效");
+            }
+            int port;
+            try {
+                port = Integer.parseInt(token.substring(colon + 1));
+            } catch (NumberFormatException exception) {
+                throw new IllegalArgumentException("Doris BE 地址无效");
+            }
+            targets.add(new DorisBeEndpoint(token.substring(0, colon), port));
+        }
+        return targets;
     }
 
     private static int integer(Map<String, String> environment, String name, int fallback) {

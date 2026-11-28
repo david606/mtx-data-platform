@@ -36,7 +36,8 @@ public final class DevOnlyDorisQuery implements AutoCloseable {
     }
 
     public void applySchema() {
-        String script = read("dev-only/doris-schema.sql");
+        String database = DevOnlyDatabaseName.require(settings.dorisDatabase());
+        String script = read("dev-only/doris-schema.sql").replace("__DEV_ONLY_DATABASE__", database);
         try (Statement statement = connection.createStatement()) {
             for (String command : script.split(";")) {
                 String sql = command.trim();
@@ -50,11 +51,12 @@ public final class DevOnlyDorisQuery implements AutoCloseable {
     }
 
     public ResultRow find(String devRunId) {
+        String database = DevOnlyDatabaseName.require(settings.dorisDatabase());
         String sql = """
                 SELECT dev_run_id, dev_only, test_task_id, raw_message_ref, contract_version_id, result_payload
-                FROM mtx_rdp_dev_only.dev_only_result
+                FROM %s.dev_only_result
                 WHERE dev_run_id = ?
-                """;
+                """.formatted(database);
         try (var statement = connection.prepareStatement(sql)) {
             statement.setString(1, devRunId);
             try (ResultSet rows = statement.executeQuery()) {

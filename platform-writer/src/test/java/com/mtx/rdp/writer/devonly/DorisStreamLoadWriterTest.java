@@ -15,6 +15,7 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.Test;
 
@@ -42,18 +43,70 @@ class DorisStreamLoadWriterTest {
     @Test
     void redirectDropsUserInfoAndKeepsAuthorization() throws Exception {
         try (LocalFe be = LocalFe.json(200, "{\"Status\":\"Success\",\"NumberLoadedRows\":1,\"NumberFilteredRows\":0}");
-                LocalFe fe = LocalFe.redirect(be)) {
-            DorisStreamLoadResult result = writer(fe).load("mtx_rdp_dev_only", "dev_only_result", "label-3", "{}".getBytes());
+                LocalFe fe = LocalFe.redirect(be, "http://dev_only_user:secret@127.0.0.1:" + be.port()
+                        + "/api/db/table/_stream_load")) {
+            DorisStreamLoadResult result = writer(fe, new DorisBeEndpoint("127.0.0.1", be.port()))
+                    .load("mtx_rdp_dev_only", "dev_only_result", "label-3", "{}".getBytes());
             assertTrue(result.success());
             assertTrue(be.sawAuthorization());
+            assertTrue(be.sawConnection());
             assertFalse(be.sawUserInfo());
+        }
+    }
+
+    @Test
+    void redirectToUnexpectedHostDoesNotSendAuthorization() throws Exception {
+        try (LocalFe evil = LocalFe.json(200, "{\"Status\":\"Success\",\"NumberLoadedRows\":1,\"NumberFilteredRows\":0}");
+                LocalFe fe = LocalFe.redirect(evil, "http://user:secret@127.0.0.1:" + evil.port() + "/api/db/table/_stream_load")) {
+            DorisStreamLoadResult result = writer(fe, new DorisBeEndpoint("192.0.2.10", 8040))
+                    .load("mtx_rdp_dev_only", "dev_only_result", "label-host", "{}".getBytes());
+            assertFalse(result.success());
+            assertEquals("Doris 重定向目标不在允许范围内", result.failureMessage());
+            assertFalse(evil.sawConnection());
+            assertFalse(result.failureMessage().contains("secret"));
+            assertFalse(result.failureMessage().contains("Authorization"));
+        }
+    }
+
+    @Test
+    void redirectToUnexpectedPortDoesNotSendAuthorization() throws Exception {
+        try (LocalFe evil = LocalFe.json(200, "{\"Status\":\"Success\",\"NumberLoadedRows\":1,\"NumberFilteredRows\":0}");
+                LocalFe fe = LocalFe.redirect(evil, "http://user:secret@127.0.0.1:" + evil.port() + "/api/db/table/_stream_load")) {
+            DorisStreamLoadResult result = writer(fe, new DorisBeEndpoint("127.0.0.1", 1))
+                    .load("mtx_rdp_dev_only", "dev_only_result", "label-port", "{}".getBytes());
+            assertFalse(result.success());
+            assertEquals("Doris 重定向目标不在允许范围内", result.failureMessage());
+            assertFalse(evil.sawConnection());
+            assertFalse(result.failureMessage().contains("secret"));
+        }
+    }
+
+    @Test
+    void redirectToHttpsIsRejected() throws Exception {
+        try (LocalFe evil = LocalFe.json(200, "{\"Status\":\"Success\",\"NumberLoadedRows\":1,\"NumberFilteredRows\":0}");
+                LocalFe fe = LocalFe.redirect(evil, "https://127.0.0.1:" + evil.port() + "/api/db/table/_stream_load")) {
+            DorisStreamLoadResult result = writer(fe, new DorisBeEndpoint("127.0.0.1", evil.port()))
+                    .load("mtx_rdp_dev_only", "dev_only_result", "label-https", "{}".getBytes());
+            assertFalse(result.success());
+            assertEquals("Doris 重定向协议不被允许", result.failureMessage());
+            assertFalse(evil.sawConnection());
+        }
+    }
+
+    @Test
+    void redirectWithoutLocationFails() throws Exception {
+        try (LocalFe fe = LocalFe.redirect(null, null)) {
+            DorisStreamLoadResult result = writer(fe, new DorisBeEndpoint("127.0.0.1", 8040))
+                    .load("mtx_rdp_dev_only", "dev_only_result", "label-missing", "{}".getBytes());
+            assertFalse(result.success());
+            assertEquals("Doris 重定向缺少 Location", result.failureMessage());
         }
     }
 
     @Test
     void rootAccountIsRejected() {
         assertThrows(IllegalArgumentException.class,
-                () -> new DorisStreamLoadWriter("127.0.0.1", 8030, "root", "secret"));
+                () -> new DorisStreamLoadWriter("127.0.0.1", 8030, "root", "secret", Set.of()));
     }
 
     @Test
@@ -66,8 +119,8 @@ class DorisStreamLoadWriterTest {
         assertNull(safe.getUserInfo());
     }
 
-    private static DorisStreamLoadWriter writer(LocalFe fe) {
-        return new DorisStreamLoadWriter("127.0.0.1", fe.port(), "dev_only_user", "secret");
+    private static DorisStreamLoadWriter writer(LocalFe fe, DorisBeEndpoint... allowed) {
+        return new DorisStreamLoadWriter("127.0.0.1", fe.port(), "dev_only_user", "secret", Set.of(allowed));
     }
 
     private static final class LocalFe implements AutoCloseable {
@@ -75,6 +128,7 @@ class DorisStreamLoadWriterTest {
         private final Thread thread;
         private final AtomicBoolean sawAuthorization = new AtomicBoolean();
         private final AtomicBoolean sawUserInfo = new AtomicBoolean();
+        private final AtomicBoolean sawConnection = new AtomicBoolean();
 
         private LocalFe(int status, String body, String location) throws IOException {
             server = new ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"));
@@ -86,8 +140,10 @@ class DorisStreamLoadWriterTest {
             return new LocalFe(status, body, null);
         }
 
-        static LocalFe redirect(LocalFe target) throws IOException {
-            String location = "http://dev_only_user:secret@127.0.0.1:" + target.port() + "/api/db/table/_stream_load";
+        static LocalFe redirect(LocalFe target, String location) throws IOException {
+            if (target == null && location == null) {
+                return new LocalFe(307, "", null);
+            }
             return new LocalFe(307, "", location);
         }
 
@@ -101,6 +157,10 @@ class DorisStreamLoadWriterTest {
 
         boolean sawUserInfo() {
             return sawUserInfo.get();
+        }
+
+        boolean sawConnection() {
+            return sawConnection.get();
         }
 
         @Override
@@ -117,6 +177,7 @@ class DorisStreamLoadWriterTest {
             try (Socket socket = server.accept();
                     InputStream input = socket.getInputStream();
                     OutputStream output = socket.getOutputStream()) {
+                sawConnection.set(true);
                 String headers = readHeaders(input);
                 sawAuthorization.set(headers.contains("Authorization:"));
                 sawUserInfo.set(headers.contains("dev_only_user:secret"));
