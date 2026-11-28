@@ -12,7 +12,7 @@ out/
 .DS_Store
 
 # Secrets and local environment
-.env.company
+.env
 .env.*
 !.env.example
 *.pem

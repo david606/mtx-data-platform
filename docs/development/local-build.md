@@ -74,18 +74,18 @@
 
 Admin 和 Worker 使用同一套 Spring profile，没有默认环境。不设置 `SPRING_PROFILES_ACTIVE` 时启动失败，不会连到公司地址。
 
+把 `.env.example` 复制为仓库根目录的 `.env`，执行 `chmod 600`，再把无效示例换成实际账号。`.env` 已被 Git 忽略。`.env.example` 不能当作启动配置。Spring Boot 不会读取这两个文件。
+
+`scripts/start-company.sh` 固定使用 `company`，`scripts/start-local.sh` 固定使用 `local`。脚本发现仅所有者可读写的 `.env` 时，只读取四个账号变量，不打印取值，也不采用文件里的地址。地址以 profile 文件为准。文件不存在时使用当前 shell 已经导出的账号变量。变量缺失或账号为 root 时立即失败，不会改用另一套环境。同名地址环境变量会覆盖 YAML，启动校验会拒绝白名单之外的地址。
+
 ```bash
-export MTX_RDP_DEV_MYSQL_USER=...
-export MTX_RDP_DEV_MYSQL_PASSWORD=...
-export MTX_RDP_DEV_DORIS_USER=...
-export MTX_RDP_DEV_DORIS_PASSWORD=...
 scripts/start-company.sh admin
 scripts/start-company.sh worker
+scripts/start-local.sh admin
+scripts/start-local.sh worker
 ```
 
-家庭环境使用同一组账号变量，执行 `scripts/start-local.sh admin` 或 `worker`。
-
-Spring Boot 不读取 `.env`。IDE 里把 `SPRING_PROFILES_ACTIVE` 设为 `company` 或 `local`，并在 Run Configuration 里填写上面的环境变量。Maven 也可以先导出变量，再执行 `./mvnw -pl app-worker spring-boot:run`。
+IDE 里把 `SPRING_PROFILES_ACTIVE` 设为 `company` 或 `local`，并在 Run Configuration 里填写同一组账号变量。Maven 直接运行时也要自己导出这些变量，因为 Spring Boot 不加载 `.env`。
 
 两套环境只有 IP 不同。端口、库名、用户名和密码相同。公司地址来自现有 DEV_ONLY 拓扑：MySQL `192.168.1.50:3306`，Kafka `192.168.1.51:9092`，Doris FE SQL `192.168.1.50:9030`，FE HTTP `192.168.1.50:8030`，BE `192.168.1.50:8040` 与 `192.168.1.51:8040`，库名 `mtx_rdp_dev_only`。家庭环境把这些主机都写成 `127.0.0.1`，端口和库名不变。两台 BE 在本机是同一个 `127.0.0.1:8040`，允许列表只保留这一条。
 

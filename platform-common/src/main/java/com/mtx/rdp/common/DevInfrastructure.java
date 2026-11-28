@@ -2,7 +2,9 @@ package com.mtx.rdp.common;
 
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * 开发环境里的服务地址和凭据。不建立连接。描述文本不包含账号、密码或 JDBC URL。
@@ -10,7 +12,18 @@ import java.util.List;
 public class DevInfrastructure {
 
     public static final String SCOPE = "DEV_ONLY";
-    private static final String LOOPBACK = "127.0.0.1";
+    private static final HostPort LOCAL_MYSQL = new HostPort("127.0.0.1", 3306);
+    private static final HostPort COMPANY_MYSQL = new HostPort("192.168.1.50", 3306);
+    private static final HostPort LOCAL_KAFKA = new HostPort("127.0.0.1", 9092);
+    private static final HostPort COMPANY_KAFKA = new HostPort("192.168.1.51", 9092);
+    private static final HostPort LOCAL_DORIS_SQL = new HostPort("127.0.0.1", 9030);
+    private static final HostPort COMPANY_DORIS_SQL = new HostPort("192.168.1.50", 9030);
+    private static final HostPort LOCAL_DORIS_HTTP = new HostPort("127.0.0.1", 8030);
+    private static final HostPort COMPANY_DORIS_HTTP = new HostPort("192.168.1.50", 8030);
+    private static final Set<HostPort> LOCAL_DORIS_BE = Set.of(new HostPort("127.0.0.1", 8040));
+    private static final Set<HostPort> COMPANY_DORIS_BE = Set.of(
+            new HostPort("192.168.1.50", 8040),
+            new HostPort("192.168.1.51", 8040));
 
     private String placement;
     private String scope;
@@ -45,8 +58,7 @@ public class DevInfrastructure {
     }
 
     private static void requireService(Mysql mysql, String name, DevelopmentPlacement expected) {
-        requireHost(name, mysql.host, expected);
-        requirePort(name, mysql.port);
+        requireExact(name, mysql.host, mysql.port, expected == DevelopmentPlacement.LOCAL ? LOCAL_MYSQL : COMPANY_MYSQL);
         requireText(name + " 数据库名不能为空", mysql.database);
         requireAccount(name, mysql.username, mysql.password);
         requireDuration(name + " 连接超时", mysql.connectTimeout);
@@ -59,7 +71,10 @@ public class DevInfrastructure {
     private void requireKafka(DevelopmentPlacement expected) {
         requireText("Kafka bootstrap 不能为空", kafka.bootstrapServers);
         HostPort bootstrap = hostPort(kafka.bootstrapServers, "Kafka bootstrap");
-        requireAddress(bootstrap.host(), expected, "Kafka");
+        HostPort allowed = expected == DevelopmentPlacement.LOCAL ? LOCAL_KAFKA : COMPANY_KAFKA;
+        if (!allowed.equals(bootstrap)) {
+            throw new PlatformConfigurationException("Kafka 地址不在当前开发环境白名单内");
+        }
         requireText("Kafka 安全协议不能为空", kafka.securityProtocol);
         requireText("Kafka producer acks 不能为空", kafka.producer.acks);
         if (kafka.consumerGroup == null) {
@@ -68,34 +83,33 @@ public class DevInfrastructure {
     }
 
     private void requireDoris(DevelopmentPlacement expected) {
-        requireHost("Doris FE SQL", doris.feSqlHost, expected);
-        requirePort("Doris FE SQL", doris.feSqlPort);
-        requireHost("Doris FE HTTP", doris.feHttpHost, expected);
-        requirePort("Doris FE HTTP", doris.feHttpPort);
+        requireExact("Doris FE SQL", doris.feSqlHost, doris.feSqlPort,
+                expected == DevelopmentPlacement.LOCAL ? LOCAL_DORIS_SQL : COMPANY_DORIS_SQL);
+        requireExact("Doris FE HTTP", doris.feHttpHost, doris.feHttpPort,
+                expected == DevelopmentPlacement.LOCAL ? LOCAL_DORIS_HTTP : COMPANY_DORIS_HTTP);
         requireText("Doris 数据库名不能为空", doris.database);
         requireAccount("Doris", doris.username, doris.password);
         requireDuration("Doris Stream Load 超时", doris.streamLoadTimeout);
+        requireBeAllowlist(expected);
+    }
+
+    private void requireBeAllowlist(DevelopmentPlacement expected) {
         List<HostPort> targets = beTargets(doris.beAllowlist);
         if (targets.isEmpty()) {
             throw new PlatformConfigurationException("Doris BE 允许列表不能为空");
         }
-        for (HostPort target : targets) {
-            requireAddress(target.host(), expected, "Doris BE");
+        Set<HostPort> actual = new LinkedHashSet<>(targets);
+        Set<HostPort> allowed = expected == DevelopmentPlacement.LOCAL ? LOCAL_DORIS_BE : COMPANY_DORIS_BE;
+        if (actual.size() != targets.size() || !actual.equals(allowed)) {
+            throw new PlatformConfigurationException("Doris BE 地址不在当前开发环境白名单内");
         }
     }
 
-    private static void requireHost(String name, String host, DevelopmentPlacement expected) {
+    private static void requireExact(String name, String host, int port, HostPort allowed) {
         requireText(name + " 主机不能为空", host);
-        requireAddress(host, expected, name);
-    }
-
-    private static void requireAddress(String host, DevelopmentPlacement expected, String name) {
-        boolean loopback = LOOPBACK.equals(host);
-        if (expected == DevelopmentPlacement.LOCAL && !loopback) {
-            throw new PlatformConfigurationException(name + " 在 local 环境必须使用 127.0.0.1");
-        }
-        if (expected == DevelopmentPlacement.COMPANY && loopback) {
-            throw new PlatformConfigurationException(name + " 在 company 环境不能使用 127.0.0.1");
+        requirePort(name, port);
+        if (!allowed.host().equals(host) || allowed.port() != port) {
+            throw new PlatformConfigurationException(name + " 地址不在当前开发环境白名单内");
         }
     }
 

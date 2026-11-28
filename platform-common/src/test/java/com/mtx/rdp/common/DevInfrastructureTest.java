@@ -21,12 +21,90 @@ class DevInfrastructureTest {
     }
 
     @Test
-    void localRejectsCompanyAddress() {
+    void localAcceptsOnlyLoopback() {
+        DevInfrastructure infrastructure = local();
+
+        infrastructure.requireFor(DevelopmentPlacement.LOCAL);
+        infrastructure.getMysql().setHost("192.168.1.50");
+
+        PlatformConfigurationException exception = assertThrows(
+                PlatformConfigurationException.class,
+                () -> infrastructure.requireFor(DevelopmentPlacement.LOCAL));
+        assertEquals("MySQL 地址不在当前开发环境白名单内", exception.getMessage());
+    }
+
+    @Test
+    void companyMysqlAcceptsOnlyTheListedAddress() {
         DevInfrastructure infrastructure = company();
-        infrastructure.setPlacement("LOCAL");
+        infrastructure.getMysql().setHost("192.168.1.51");
+
+        PlatformConfigurationException exception = assertThrows(
+                PlatformConfigurationException.class,
+                () -> infrastructure.requireFor(DevelopmentPlacement.COMPANY));
+        assertEquals("MySQL 地址不在当前开发环境白名单内", exception.getMessage());
+    }
+
+    @Test
+    void companyKafkaAcceptsOnlyTheListedAddress() {
+        DevInfrastructure infrastructure = company();
+        infrastructure.getKafka().setBootstrapServers("192.168.1.50:9092");
+
+        PlatformConfigurationException exception = assertThrows(
+                PlatformConfigurationException.class,
+                () -> infrastructure.requireFor(DevelopmentPlacement.COMPANY));
+        assertEquals("Kafka 地址不在当前开发环境白名单内", exception.getMessage());
+    }
+
+    @Test
+    void companyDorisFeAcceptsOnlyTheListedAddress() {
+        DevInfrastructure infrastructure = company();
+        infrastructure.getDoris().setFeSqlHost("192.168.1.51");
+
+        PlatformConfigurationException sqlException = assertThrows(
+                PlatformConfigurationException.class,
+                () -> infrastructure.requireFor(DevelopmentPlacement.COMPANY));
+        assertEquals("Doris FE SQL 地址不在当前开发环境白名单内", sqlException.getMessage());
+
+        infrastructure.getDoris().setFeSqlHost("192.168.1.50");
+        infrastructure.getDoris().setFeHttpPort(9030);
+        PlatformConfigurationException httpException = assertThrows(
+                PlatformConfigurationException.class,
+                () -> infrastructure.requireFor(DevelopmentPlacement.COMPANY));
+        assertEquals("Doris FE HTTP 地址不在当前开发环境白名单内", httpException.getMessage());
+    }
+
+    @Test
+    void companyDorisBeAcceptsOnlyTheListedAddresses() {
+        DevInfrastructure infrastructure = company();
+        infrastructure.getDoris().setBeAllowlist("192.168.1.51:8040,192.168.1.50:8040");
+        infrastructure.requireFor(DevelopmentPlacement.COMPANY);
+
+        infrastructure.getDoris().setBeAllowlist("192.168.1.50:8040,10.0.0.8:8040");
+        PlatformConfigurationException exception = assertThrows(
+                PlatformConfigurationException.class,
+                () -> infrastructure.requireFor(DevelopmentPlacement.COMPANY));
+        assertEquals("Doris BE 地址不在当前开发环境白名单内", exception.getMessage());
+    }
+
+    @Test
+    void unknownAddressIsRejected() {
+        DevInfrastructure infrastructure = company();
+        infrastructure.getMysql().setHost("10.1.2.3");
 
         assertThrows(PlatformConfigurationException.class,
-                () -> infrastructure.requireFor(DevelopmentPlacement.LOCAL));
+                () -> infrastructure.requireFor(DevelopmentPlacement.COMPANY));
+    }
+
+    @Test
+    void rootAccountIsRejected() {
+        DevInfrastructure infrastructure = company();
+        infrastructure.getMysql().setUsername("root");
+
+        PlatformConfigurationException exception = assertThrows(
+                PlatformConfigurationException.class,
+                () -> infrastructure.requireFor(DevelopmentPlacement.COMPANY));
+        assertEquals("MySQL 账号不能为空，也不能使用 root", exception.getMessage());
+        assertFalse(exception.getMessage().contains("invalid-example"));
     }
 
     @Test
@@ -72,6 +150,18 @@ class DevInfrastructureTest {
         doris.setPassword("invalid-example");
         doris.setStreamLoadTimeout(Duration.ofSeconds(30));
         infrastructure.requireFor(DevelopmentPlacement.COMPANY);
+        return infrastructure;
+    }
+
+    private static DevInfrastructure local() {
+        DevInfrastructure infrastructure = company();
+        infrastructure.setPlacement("LOCAL");
+        infrastructure.getMysql().setHost("127.0.0.1");
+        infrastructure.getKafka().setBootstrapServers("127.0.0.1:9092");
+        infrastructure.getDoris().setFeSqlHost("127.0.0.1");
+        infrastructure.getDoris().setFeHttpHost("127.0.0.1");
+        infrastructure.getDoris().setBeAllowlist("127.0.0.1:8040");
+        infrastructure.requireFor(DevelopmentPlacement.LOCAL);
         return infrastructure;
     }
 }
