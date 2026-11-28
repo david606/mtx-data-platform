@@ -82,12 +82,12 @@ class ModuleArchitectureTest {
                 actual.get("platform-common"));
         assertFalse(dependsOn(actual.get("platform-common"), "platform-core"));
         assertEquals(coreDependencies(), actual.get("platform-core"));
-        assertEquals(internal("platform-common", "platform-core"), actual.get("platform-messaging"));
+        assertEquals(messagingDependencies(), actual.get("platform-messaging"));
         assertEquals(connectorDependencies(), actual.get("platform-connector"));
-        assertEquals(internal("platform-common", "platform-core"), actual.get("platform-transform"));
+        assertEquals(withJunit(internal("platform-common", "platform-core")), actual.get("platform-transform"));
         assertEquals(internal("platform-common", "platform-core"), actual.get("platform-quality"));
-        assertEquals(internal("platform-common", "platform-core"), actual.get("platform-writer"));
-        assertEquals(internal("platform-common", "platform-core"), actual.get("platform-pipeline"));
+        assertEquals(withJunit(internal("platform-common", "platform-core")), actual.get("platform-writer"));
+        assertEquals(withJunit(internal("platform-common", "platform-core")), actual.get("platform-pipeline"));
         assertEquals(adminDependencies(), actual.get("app-admin"));
         assertEquals(workerDependencies(), actual.get("app-worker"));
 
@@ -118,6 +118,18 @@ class ModuleArchitectureTest {
                 "platform-writer",
                 "platform-pipeline");
         dependencies.addAll(applicationRuntime());
+        dependencies.add(new DeclaredDependency("com.mysql", "mysql-connector-j", "compile"));
+        return dependencies;
+    }
+
+    private static Set<DeclaredDependency> messagingDependencies() {
+        Set<DeclaredDependency> dependencies = internal("platform-common", "platform-core");
+        dependencies.add(new DeclaredDependency("org.apache.kafka", "kafka-clients", "compile"));
+        return withJunit(dependencies);
+    }
+
+    private static Set<DeclaredDependency> withJunit(Set<DeclaredDependency> dependencies) {
+        dependencies.add(new DeclaredDependency("org.junit.jupiter", "junit-jupiter", "test"));
         return dependencies;
     }
 
