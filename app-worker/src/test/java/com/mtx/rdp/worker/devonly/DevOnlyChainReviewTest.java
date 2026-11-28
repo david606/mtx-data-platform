@@ -144,7 +144,8 @@ class DevOnlyChainReviewTest {
         DevOnlyChainSettings settings = DevOnlyChainSettings.from(credentials());
         assertEquals(DevOnlyDatabaseName.NAME, settings.mysqlDatabase());
         assertEquals(DevOnlyDatabaseName.NAME, settings.dorisDatabase());
-        assertEquals(2, settings.dorisBeTargets().size());
+        assertEquals(1, settings.dorisBeTargets().size());
+        assertEquals("127.0.0.1", settings.mysqlHost());
     }
 
     @Test
@@ -200,6 +201,13 @@ class DevOnlyChainReviewTest {
         environment.put(DevOnlyChainSettings.MYSQL_PASSWORD, "secret");
         environment.put(DevOnlyChainSettings.DORIS_USER, "dev_only_user");
         environment.put(DevOnlyChainSettings.DORIS_PASSWORD, "secret");
+        environment.put("MTX_RDP_DEV_KAFKA_BOOTSTRAP", "127.0.0.1:9092");
+        environment.put("MTX_RDP_DEV_MYSQL_HOST", "127.0.0.1");
+        environment.put("MTX_RDP_DEV_MYSQL_PORT", "3306");
+        environment.put("MTX_RDP_DEV_DORIS_HOST", "127.0.0.1");
+        environment.put("MTX_RDP_DEV_DORIS_HTTP_PORT", "8030");
+        environment.put("MTX_RDP_DEV_DORIS_QUERY_PORT", "9030");
+        environment.put("MTX_RDP_DEV_DORIS_BE", "127.0.0.1:8040");
         return environment;
     }
 

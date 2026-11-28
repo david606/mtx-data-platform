@@ -3,8 +3,11 @@ package com.mtx.rdp.connector.simulation;
 import java.nio.charset.StandardCharsets;
 
 /**
- * 生成一份标明虚构的完整报文。不连接业务平台，不读取外部配置，也不创建 Task 或 Pipeline。
- * 类型出现在 classpath 上不等于获得运行时使用许可。
+ * 虚构报文
+ * <pre>
+ * 1. 生成一份标明虚构的完整报文。不连接业务平台，不读取外部配置，也不创建 Task 或 Pipeline。
+ * 2. 类型出现在 classpath 上不等于获得运行时使用许可。
+ * </pre>
  */
 public final class FictionalMessageSource {
 

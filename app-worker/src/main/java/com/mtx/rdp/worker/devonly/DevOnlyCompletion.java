@@ -14,13 +14,13 @@ final class DevOnlyCompletion {
     }
 
     static String mismatch(
-            DevOnlyExecutionResult.Completed completed,
-            DevOnlyDorisQuery.ResultRow row,
-            DevOnlyMysqlStore.RawView raw,
-            DevOnlyMysqlStore.TaskView task,
-            String runId,
-            String taskId,
-            String rawRef) {
+        DevOnlyExecutionResult.Completed completed,
+        DevOnlyDorisQuery.ResultRow row,
+        DevOnlyMysqlStore.RawView raw,
+        DevOnlyMysqlStore.TaskView task,
+        String runId,
+        String taskId,
+        String rawRef) {
         if (row == null) {
             return "Doris 没有查到本次运行结果";
         }
@@ -40,7 +40,7 @@ final class DevOnlyCompletion {
             return "Doris DEV_ONLY 标记不一致";
         }
         if (!FIELD.equals(row.resultPayload()) || !CONTRACT.equals(completed.contractVersionId())
-                || !FIELD.equals(completed.passthroughField())) {
+            || !FIELD.equals(completed.passthroughField())) {
             return "Doris 结果字段不一致";
         }
         if (raw == null) {

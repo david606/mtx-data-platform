@@ -1,0 +1,38 @@
+# 家庭开发环境
+# <pre>
+# 1. 家庭开发环境。与公司环境只有 IP 不同：公司的 192.168.1.50 和 192.168.1.51 在本机都是 127.0.0.1。
+# 2. 端口、库名、账号和密码与 application-company.yml 相同。两台 BE 落到同一个本机端口，允许列表只保留一条。
+# </pre>
+mtx:
+  rdp:
+    dev:
+      placement: LOCAL
+      scope: DEV_ONLY
+      mysql:
+        host: 127.0.0.1
+        port: 3306
+        database: mtx_rdp_dev_only
+        username: ${MTX_RDP_DEV_MYSQL_USER}
+        password: ${MTX_RDP_DEV_MYSQL_PASSWORD}
+        connect-timeout: 5s
+        pool:
+          maximum-size: 2
+          minimum-idle: 0
+      kafka:
+        bootstrap-servers: 127.0.0.1:9092
+        consumer-group: ""
+        security-protocol: PLAINTEXT
+        producer:
+          acks: all
+        consumer:
+          enable-auto-commit: false
+      doris:
+        fe-sql-host: 127.0.0.1
+        fe-sql-port: 9030
+        fe-http-host: 127.0.0.1
+        fe-http-port: 8030
+        be-allowlist: 127.0.0.1:8040
+        database: mtx_rdp_dev_only
+        username: ${MTX_RDP_DEV_DORIS_USER}
+        password: ${MTX_RDP_DEV_DORIS_PASSWORD}
+        stream-load-timeout: 30s

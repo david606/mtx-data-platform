@@ -68,4 +68,27 @@
 
 当前测试包括两个应用的 Spring 上下文启动测试，以及 `platform-common` 中的启动校验和模块边界测试。根 POM 的 Enforcer 只要求 JDK `[25,26)`，不全局禁止 Kafka、MyBatis-Plus、MySQL、Doris 或 Quartz。`platform-core` 的 Enforcer 检查直接依赖和传递依赖，禁止 Spring、整个 `org.springframework.data`、MyBatis、Kafka、Quartz、Redis 和 Doris 客户端进入该模块。其余能力模块没有业务测试类。Maven Failsafe 没有启用。这些命令不连接 Doris、Kafka 或数据库，也没有业务启动参数。
 
-两个应用配置进程名、`mtx.rdp.role`、统一控制台日志和进程内健康状态。`web-application-type` 为 `none`，不提供 HTTP 接口，也不单独保证进程退出。没有数据库、Kafka 或业务接口配置。
+两个应用配置进程名、`mtx.rdp.role`、统一控制台日志和进程内健康状态。`web-application-type` 为 `none`，不提供 HTTP 接口，也不单独保证进程退出。
+
+## 公司与家庭开发环境
+
+Admin 和 Worker 使用同一套 Spring profile，没有默认环境。不设置 `SPRING_PROFILES_ACTIVE` 时启动失败，不会连到公司地址。
+
+```bash
+export MTX_RDP_DEV_MYSQL_USER=...
+export MTX_RDP_DEV_MYSQL_PASSWORD=...
+export MTX_RDP_DEV_DORIS_USER=...
+export MTX_RDP_DEV_DORIS_PASSWORD=...
+scripts/start-company.sh admin
+scripts/start-company.sh worker
+```
+
+家庭环境使用同一组账号变量，执行 `scripts/start-local.sh admin` 或 `worker`。
+
+Spring Boot 不读取 `.env`。IDE 里把 `SPRING_PROFILES_ACTIVE` 设为 `company` 或 `local`，并在 Run Configuration 里填写上面的环境变量。Maven 也可以先导出变量，再执行 `./mvnw -pl app-worker spring-boot:run`。
+
+两套环境只有 IP 不同。端口、库名、用户名和密码相同。公司地址来自现有 DEV_ONLY 拓扑：MySQL `192.168.1.50:3306`，Kafka `192.168.1.51:9092`，Doris FE SQL `192.168.1.50:9030`，FE HTTP `192.168.1.50:8030`，BE `192.168.1.50:8040` 与 `192.168.1.51:8040`，库名 `mtx_rdp_dev_only`。家庭环境把这些主机都写成 `127.0.0.1`，端口和库名不变。两台 BE 在本机是同一个 `127.0.0.1:8040`，允许列表只保留这一条。
+
+连接超时 5 秒、Stream Load 超时 30 秒、池最大 2 是这份开发配置里新写的限制，不是从服务器读到的参数。当前进程只绑定这些值，不因为启动去连接数据库。脚本不执行 DDL。日志只写环境名、主机、端口、库名和 BE 允许列表。
+
+`DevOnlyChainMain` 仍是手工入口。它不再内置公司地址。地址变量缺失时失败。

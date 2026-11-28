@@ -13,8 +13,11 @@ import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.serialization.ByteArrayDeserializer;
 
 /**
- * 按刚发送的位点读取一条 DEV_ONLY 字节。自动提交关闭。
- * 这是单条测试读取，不是正式消费组位点方案。
+ * DEV_ONLY 单条位点读取
+ * <pre>
+ * 1. 按刚发送的位点读取一条 DEV_ONLY 字节。自动提交关闭。
+ * 2. 这是单条测试读取，不是正式消费组位点方案。
+ * </pre>
  */
 public final class DevOnlyRawMessageReceiver implements AutoCloseable {
 

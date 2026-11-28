@@ -13,14 +13,22 @@ import java.util.Optional;
 import java.util.Set;
 
 /**
- * 用 JDK HTTP 客户端调用 Doris FE Stream Load。不引入 Doris Java 客户端。
- * 认证信息只放在请求头，不进入异常文本。重定向只发往预先允许的 BE。
+ * Doris Stream Load 写入
+ * <pre>
+ * 1. 用 JDK HTTP 客户端调用 Doris FE Stream Load。不引入 Doris Java 客户端。
+ * 2. 认证信息只放在请求头，不进入异常文本。重定向只发往预先允许的 BE。
+ * </pre>
  */
 public final class DorisStreamLoadWriter {
 
     static {
-        // Doris FE 拒绝没有 Expect: 100-continue 的 Stream Load。
-        // JDK HttpClient 默认禁止该头，必须在客户端类初始化前放开。
+        /*
+         * 放开 Expect 请求头
+         * <pre>
+         * 1. Doris FE 拒绝没有 Expect: 100-continue 的 Stream Load。
+         * 2. JDK HttpClient 默认禁止该头，必须在客户端类初始化前放开。
+         * </pre>
+         */
         String allowed = System.getProperty("jdk.httpclient.allowRestrictedHeaders", "");
         if (!allowed.toLowerCase().contains("expect")) {
             System.setProperty("jdk.httpclient.allowRestrictedHeaders", allowed.isBlank() ? "expect" : allowed + ",expect");

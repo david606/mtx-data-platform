@@ -9,21 +9,21 @@ import org.junit.jupiter.api.Test;
 class StartupChecklistTest {
 
     @Test
-    void reportsUnnamedEnvironmentWhenNoProfileIsActive() {
-        StartupReport report = StartupChecklist.check(
-                "mtx-rdp-admin",
-                "mtx-rdp-admin",
-                "admin",
-                ApplicationRole.ADMIN,
-                List.of());
+    void rejectsStartupWhenNoDevelopmentProfileIsActive() {
+        PlatformConfigurationException exception = assertThrows(
+                PlatformConfigurationException.class,
+                () -> StartupChecklist.check(
+                        "mtx-rdp-admin",
+                        "mtx-rdp-admin",
+                        "admin",
+                        ApplicationRole.ADMIN,
+                        List.of()));
 
-        assertEquals(ApplicationRole.ADMIN, report.role());
-        assertEquals(StartupChecklist.UNNAMED_ENVIRONMENT, report.environmentLabel());
-        assertEquals(List.of(), report.activeProfiles());
+        assertEquals("未选择开发环境 company 或 local，拒绝启动", exception.getMessage());
     }
 
     @Test
-    void reportsActiveProfilesWithoutChoosingADeployment() {
+    void reportsLocalPlacementWithoutUsingCompany() {
         StartupReport report = StartupChecklist.check(
                 "mtx-rdp-worker",
                 "mtx-rdp-worker",
@@ -31,7 +31,19 @@ class StartupChecklistTest {
                 ApplicationRole.WORKER,
                 List.of("local", "debug"));
 
-        assertEquals("local,debug", report.environmentLabel());
+        assertEquals("LOCAL", report.environmentLabel());
+    }
+
+    @Test
+    void rejectsCompanyAndLocalTogether() {
+        assertThrows(
+                PlatformConfigurationException.class,
+                () -> StartupChecklist.check(
+                        "mtx-rdp-admin",
+                        "mtx-rdp-admin",
+                        "admin",
+                        ApplicationRole.ADMIN,
+                        List.of("company", "local")));
     }
 
     @Test

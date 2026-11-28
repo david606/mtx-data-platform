@@ -24,8 +24,11 @@ import org.w3c.dom.Node;
 import org.xml.sax.SAXException;
 
 /**
- * 读取反应器 POM。十模块、依赖方向、Core 隔离和 Pipeline 边界是持续约束。
- * 各模块的精确依赖集合只表示当前基线；按 ADR 增加依赖时要同步更新对应预期，不能靠根 POM 全局禁止。
+ * 模块依赖基线
+ * <pre>
+ * 1. 读取反应器 POM。十模块、依赖方向、Core 隔离和 Pipeline 边界是持续约束。
+ * 2. 各模块的精确依赖集合只表示当前基线；按 ADR 增加依赖时要同步更新对应预期，不能靠根 POM 全局禁止。
+ * </pre>
  */
 class ModuleArchitectureTest {
 

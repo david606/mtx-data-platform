@@ -15,8 +15,11 @@ import java.util.Optional;
 import org.junit.jupiter.api.Test;
 
 /**
- * 确认键原始文本解析。不是生产识别，也不是 DEV_ONLY 创建许可。
- * ACKNOWLEDGED 只表示显式确认完整。PRODUCTION_SELF_DECLARED 只是自我声明。
+ * 确认键解析测试
+ * <pre>
+ * 1. 确认键原始文本解析。不是生产识别，也不是 DEV_ONLY 创建许可。
+ * 2. ACKNOWLEDGED 只表示显式确认完整。PRODUCTION_SELF_DECLARED 只是自我声明。
+ * </pre>
  */
 class RuntimeModeConfirmationParserTest {
 

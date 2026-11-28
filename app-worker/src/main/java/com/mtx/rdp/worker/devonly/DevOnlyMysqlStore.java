@@ -27,7 +27,7 @@ public final class DevOnlyMysqlStore implements AutoCloseable, DevOnlyTaskBook {
     public void open() {
         connection = connect("jdbc:mysql://" + settings.mysqlHost() + ":" + settings.mysqlPort()
                 + "/?useSSL=false&allowPublicKeyRetrieval=true&characterEncoding=utf8&connectionTimeZone=UTC",
-                settings.mysqlUser(), settings.mysqlPassword());
+            settings.mysqlUser(), settings.mysqlPassword());
     }
 
     public String serverVersion() {
@@ -48,13 +48,14 @@ public final class DevOnlyMysqlStore implements AutoCloseable, DevOnlyTaskBook {
 
     public ExistingRow findByPosition(String topic, int partition, long offset) {
         String sql = """
-                SELECT raw_message.raw_message_ref, task.test_task_id, task.status
-                FROM %s raw_message
-                JOIN %s task
-                  ON task.raw_message_ref = raw_message.raw_message_ref
-                WHERE raw_message.kafka_topic = ? AND raw_message.kafka_partition = ?
-                  AND raw_message.kafka_offset = ? AND raw_message.dev_only = 1 AND task.dev_only = 1
-                """.formatted(table("dev_only_raw_message"), table("dev_only_task"));
+            SELECT raw_message.raw_message_ref, task.test_task_id, task.status
+            FROM %s raw_message
+            JOIN %s task
+              ON task.raw_message_ref = raw_message.raw_message_ref
+            WHERE raw_message.kafka_topic = ? AND raw_message.kafka_partition = ?
+              AND raw_message.kafka_offset = ? AND raw_message.dev_only = 1 AND task.dev_only = 1
+            """.formatted(table("dev_only_raw_message"), table("dev_only_task"));
+
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setString(1, topic);
             statement.setInt(2, partition);
@@ -71,7 +72,7 @@ public final class DevOnlyMysqlStore implements AutoCloseable, DevOnlyTaskBook {
     }
 
     public void insertRawAndTask(
-            String rawRef, String taskId, byte[] payload, String topic, int partition, long offset, Instant receivedAt) {
+        String rawRef, String taskId, byte[] payload, String topic, int partition, long offset, Instant receivedAt) {
         if (!DevOnlyPayload.marked(payload)) {
             throw new IllegalArgumentException("无 DEV_ONLY 标记，不写入测试表");
         }
@@ -90,10 +91,10 @@ public final class DevOnlyMysqlStore implements AutoCloseable, DevOnlyTaskBook {
 
     public boolean claim(String taskId, Instant claimedAt) {
         String sql = """
-                UPDATE %s
-                SET status = 'CLAIMED', claimed_at = ?
-                WHERE test_task_id = ? AND dev_only = 1 AND status = 'READY'
-                """.formatted(table("dev_only_task"));
+            UPDATE %s
+            SET status = 'CLAIMED', claimed_at = ?
+            WHERE test_task_id = ? AND dev_only = 1 AND status = 'READY'
+            """.formatted(table("dev_only_task"));
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setTimestamp(1, Timestamp.from(claimedAt));
             statement.setString(2, taskId);
@@ -147,10 +148,10 @@ public final class DevOnlyMysqlStore implements AutoCloseable, DevOnlyTaskBook {
 
     public TaskView findTask(String taskId) {
         String sql = """
-                SELECT test_task_id, raw_message_ref, dev_only, status, failure_reason
-                FROM %s
-                WHERE test_task_id = ?
-                """.formatted(table("dev_only_task"));
+            SELECT test_task_id, raw_message_ref, dev_only, status, failure_reason
+            FROM %s
+            WHERE test_task_id = ?
+            """.formatted(table("dev_only_task"));
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setString(1, taskId);
             try (ResultSet rows = statement.executeQuery()) {
@@ -158,7 +159,7 @@ public final class DevOnlyMysqlStore implements AutoCloseable, DevOnlyTaskBook {
                     return null;
                 }
                 return new TaskView(rows.getString(1), rows.getString(2), rows.getInt(3),
-                        rows.getString(4), rows.getString(5));
+                    rows.getString(4), rows.getString(5));
             }
         } catch (SQLException exception) {
             throw new IllegalStateException("查询 DEV_ONLY 测试任务失败", exception);
@@ -167,10 +168,10 @@ public final class DevOnlyMysqlStore implements AutoCloseable, DevOnlyTaskBook {
 
     public RawView findRaw(String rawRef) {
         String sql = """
-                SELECT raw_message_ref, dev_only, kafka_topic, kafka_partition, kafka_offset
-                FROM %s
-                WHERE raw_message_ref = ?
-                """.formatted(table("dev_only_raw_message"));
+            SELECT raw_message_ref, dev_only, kafka_topic, kafka_partition, kafka_offset
+            FROM %s
+            WHERE raw_message_ref = ?
+            """.formatted(table("dev_only_raw_message"));
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setString(1, rawRef);
             try (ResultSet rows = statement.executeQuery()) {
@@ -178,7 +179,7 @@ public final class DevOnlyMysqlStore implements AutoCloseable, DevOnlyTaskBook {
                     return null;
                 }
                 return new RawView(rows.getString(1), rows.getInt(2), rows.getString(3),
-                        rows.getInt(4), rows.getLong(5));
+                    rows.getInt(4), rows.getLong(5));
             }
         } catch (SQLException exception) {
             throw new IllegalStateException("查询 DEV_ONLY 原文失败", exception);
@@ -197,13 +198,13 @@ public final class DevOnlyMysqlStore implements AutoCloseable, DevOnlyTaskBook {
     }
 
     private void insertRaw(
-            String rawRef, byte[] payload, String topic, int partition, long offset, Instant receivedAt)
-            throws SQLException {
+        String rawRef, byte[] payload, String topic, int partition, long offset, Instant receivedAt)
+        throws SQLException {
         String sql = """
-                INSERT INTO %s
-                (raw_message_ref, dev_only, payload, kafka_topic, kafka_partition, kafka_offset, received_at, created_at)
-                VALUES (?, 1, ?, ?, ?, ?, ?, ?)
-                """.formatted(table("dev_only_raw_message"));
+            INSERT INTO %s
+            (raw_message_ref, dev_only, payload, kafka_topic, kafka_partition, kafka_offset, received_at, created_at)
+            VALUES (?, 1, ?, ?, ?, ?, ?, ?)
+            """.formatted(table("dev_only_raw_message"));
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setString(1, rawRef);
             statement.setBytes(2, payload);
@@ -218,10 +219,10 @@ public final class DevOnlyMysqlStore implements AutoCloseable, DevOnlyTaskBook {
 
     private void insertTask(String taskId, String rawRef, Instant createdAt) throws SQLException {
         String sql = """
-                INSERT INTO %s
-                (test_task_id, raw_message_ref, dev_only, status, created_at)
-                VALUES (?, ?, 1, 'READY', ?)
-                """.formatted(table("dev_only_task"));
+            INSERT INTO %s
+            (test_task_id, raw_message_ref, dev_only, status, created_at)
+            VALUES (?, ?, 1, 'READY', ?)
+            """.formatted(table("dev_only_task"));
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setString(1, taskId);
             statement.setString(2, rawRef);
@@ -231,23 +232,23 @@ public final class DevOnlyMysqlStore implements AutoCloseable, DevOnlyTaskBook {
     }
 
     private void updateFinish(
-            String taskId, String runId, String status, Instant finishedAt, String reason, boolean keepTaskFailure) {
+        String taskId, String runId, String status, Instant finishedAt, String reason, boolean keepTaskFailure) {
         String taskSql = keepTaskFailure
-                ? """
-                UPDATE %s
-                SET status = ?, finished_at = ?
-                WHERE test_task_id = ? AND dev_only = 1 AND status = 'CLAIMED'
-                """.formatted(table("dev_only_task"))
-                : """
-                UPDATE %s
-                SET status = ?, finished_at = ?, failure_reason = ?
-                WHERE test_task_id = ? AND dev_only = 1 AND status = 'CLAIMED'
-                """.formatted(table("dev_only_task"));
+            ? """
+            UPDATE %s
+            SET status = ?, finished_at = ?
+            WHERE test_task_id = ? AND dev_only = 1 AND status = 'CLAIMED'
+            """.formatted(table("dev_only_task"))
+            : """
+            UPDATE %s
+            SET status = ?, finished_at = ?, failure_reason = ?
+            WHERE test_task_id = ? AND dev_only = 1 AND status = 'CLAIMED'
+            """.formatted(table("dev_only_task"));
         String runSql = """
-                UPDATE %s
-                SET outcome = ?, finished_at = ?, failure_reason = COALESCE(?, failure_reason)
-                WHERE run_id = ? AND dev_only = 1 AND outcome = 'STARTED'
-                """.formatted(table("dev_only_task_run"));
+            UPDATE %s
+            SET outcome = ?, finished_at = ?, failure_reason = COALESCE(?, failure_reason)
+            WHERE run_id = ? AND dev_only = 1 AND outcome = 'STARTED'
+            """.formatted(table("dev_only_task_run"));
         try {
             connection.setAutoCommit(false);
             int tasks;
@@ -285,11 +286,11 @@ public final class DevOnlyMysqlStore implements AutoCloseable, DevOnlyTaskBook {
 
     private TaskView lockTask(String taskId) throws SQLException {
         String sql = """
-                SELECT test_task_id, raw_message_ref, dev_only, status, failure_reason
-                FROM %s
-                WHERE test_task_id = ?
-                FOR UPDATE
-                """.formatted(table("dev_only_task"));
+            SELECT test_task_id, raw_message_ref, dev_only, status, failure_reason
+            FROM %s
+            WHERE test_task_id = ?
+            FOR UPDATE
+            """.formatted(table("dev_only_task"));
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setString(1, taskId);
             try (ResultSet rows = statement.executeQuery()) {
@@ -297,17 +298,17 @@ public final class DevOnlyMysqlStore implements AutoCloseable, DevOnlyTaskBook {
                     return null;
                 }
                 return new TaskView(rows.getString(1), rows.getString(2), rows.getInt(3),
-                        rows.getString(4), rows.getString(5));
+                    rows.getString(4), rows.getString(5));
             }
         }
     }
 
     private int claimFromFailed(String taskId, Instant claimedAt) throws SQLException {
         String sql = """
-                UPDATE %s
-                SET status = 'CLAIMED', claimed_at = ?
-                WHERE test_task_id = ? AND dev_only = 1 AND status = 'FAILED'
-                """.formatted(table("dev_only_task"));
+            UPDATE %s
+            SET status = 'CLAIMED', claimed_at = ?
+            WHERE test_task_id = ? AND dev_only = 1 AND status = 'FAILED'
+            """.formatted(table("dev_only_task"));
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setTimestamp(1, Timestamp.from(claimedAt));
             statement.setString(2, taskId);
@@ -317,10 +318,10 @@ public final class DevOnlyMysqlStore implements AutoCloseable, DevOnlyTaskBook {
 
     private void insertRun(String runId, String taskId, String priorFailure, Instant startedAt) throws SQLException {
         String sql = """
-                INSERT INTO %s
-                (run_id, test_task_id, dev_only, prior_failure_reason, outcome, started_at)
-                VALUES (?, ?, 1, ?, 'STARTED', ?)
-                """.formatted(table("dev_only_task_run"));
+            INSERT INTO %s
+            (run_id, test_task_id, dev_only, prior_failure_reason, outcome, started_at)
+            VALUES (?, ?, 1, ?, 'STARTED', ?)
+            """.formatted(table("dev_only_task_run"));
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setString(1, runId);
             statement.setString(2, taskId);
@@ -332,7 +333,7 @@ public final class DevOnlyMysqlStore implements AutoCloseable, DevOnlyTaskBook {
 
     private String table(String table) {
         if (!"dev_only_raw_message".equals(table) && !"dev_only_task".equals(table)
-                && !"dev_only_task_run".equals(table)) {
+            && !"dev_only_task_run".equals(table)) {
             throw new IllegalArgumentException("DEV_ONLY 表名不被允许");
         }
         return DevOnlyDatabaseName.require(settings.mysqlDatabase()) + "." + table;
@@ -355,7 +356,7 @@ public final class DevOnlyMysqlStore implements AutoCloseable, DevOnlyTaskBook {
 
     private String queryString(String sql) {
         try (Statement statement = connection.createStatement();
-                ResultSet rows = statement.executeQuery(sql)) {
+             ResultSet rows = statement.executeQuery(sql)) {
             if (!rows.next()) {
                 return "";
             }

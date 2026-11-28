@@ -1,6 +1,7 @@
 package com.mtx.rdp.worker.devonly;
 
 import com.mtx.rdp.writer.devonly.DorisBeEndpoint;
+
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -9,26 +10,24 @@ import java.util.Map;
  * 开发测试连接参数。口令只来自调用方给出的环境，不写死在代码里。
  */
 public record DevOnlyChainSettings(
-        String kafkaBootstrap,
-        String mysqlHost,
-        int mysqlPort,
-        String mysqlDatabase,
-        String mysqlUser,
-        String mysqlPassword,
-        String dorisHost,
-        int dorisHttpPort,
-        int dorisQueryPort,
-        String dorisDatabase,
-        String dorisUser,
-        String dorisPassword,
-        List<DorisBeEndpoint> dorisBeTargets) {
+    String kafkaBootstrap,
+    String mysqlHost,
+    int mysqlPort,
+    String mysqlDatabase,
+    String mysqlUser,
+    String mysqlPassword,
+    String dorisHost,
+    int dorisHttpPort,
+    int dorisQueryPort,
+    String dorisDatabase,
+    String dorisUser,
+    String dorisPassword,
+    List<DorisBeEndpoint> dorisBeTargets) {
 
     public static final String MYSQL_USER = "MTX_RDP_DEV_MYSQL_USER";
     public static final String MYSQL_PASSWORD = "MTX_RDP_DEV_MYSQL_PASSWORD";
     public static final String DORIS_USER = "MTX_RDP_DEV_DORIS_USER";
     public static final String DORIS_PASSWORD = "MTX_RDP_DEV_DORIS_PASSWORD";
-
-    public static final String DEFAULT_DORIS_BE = "192.168.1.50:8040,192.168.1.51:8040";
 
     public DevOnlyChainSettings {
         mysqlDatabase = DevOnlyDatabaseName.require(mysqlDatabase);
@@ -59,19 +58,19 @@ public record DevOnlyChainSettings(
             throw new IllegalArgumentException("缺少环境变量: " + String.join(", ", missing));
         }
         return new DevOnlyChainSettings(
-                value(environment, "MTX_RDP_DEV_KAFKA_BOOTSTRAP", "192.168.1.51:9092"),
-                value(environment, "MTX_RDP_DEV_MYSQL_HOST", "192.168.1.50"),
-                integer(environment, "MTX_RDP_DEV_MYSQL_PORT", 3306),
-                value(environment, "MTX_RDP_DEV_MYSQL_DATABASE", "mtx_rdp_dev_only"),
-                environment.get(MYSQL_USER),
-                environment.get(MYSQL_PASSWORD),
-                value(environment, "MTX_RDP_DEV_DORIS_HOST", "192.168.1.50"),
-                integer(environment, "MTX_RDP_DEV_DORIS_HTTP_PORT", 8030),
-                integer(environment, "MTX_RDP_DEV_DORIS_QUERY_PORT", 9030),
-                value(environment, "MTX_RDP_DEV_DORIS_DATABASE", "mtx_rdp_dev_only"),
-                environment.get(DORIS_USER),
-                environment.get(DORIS_PASSWORD),
-                beTargets(environment));
+            required(environment, "MTX_RDP_DEV_KAFKA_BOOTSTRAP"),
+            required(environment, "MTX_RDP_DEV_MYSQL_HOST"),
+            integer(environment, "MTX_RDP_DEV_MYSQL_PORT"),
+            value(environment, "MTX_RDP_DEV_MYSQL_DATABASE", "mtx_rdp_dev_only"),
+            environment.get(MYSQL_USER),
+            environment.get(MYSQL_PASSWORD),
+            required(environment, "MTX_RDP_DEV_DORIS_HOST"),
+            integer(environment, "MTX_RDP_DEV_DORIS_HTTP_PORT"),
+            integer(environment, "MTX_RDP_DEV_DORIS_QUERY_PORT"),
+            value(environment, "MTX_RDP_DEV_DORIS_DATABASE", "mtx_rdp_dev_only"),
+            environment.get(DORIS_USER),
+            environment.get(DORIS_PASSWORD),
+            beTargets(required(environment, "MTX_RDP_DEV_DORIS_BE")));
     }
 
     private static void addIfBlank(List<String> missing, Map<String, String> environment, String name) {
@@ -79,6 +78,14 @@ public record DevOnlyChainSettings(
         if (value == null || value.isBlank()) {
             missing.add(name);
         }
+    }
+
+    private static String required(Map<String, String> environment, String name) {
+        String value = environment.get(name);
+        if (value == null || value.isBlank()) {
+            throw new IllegalArgumentException("缺少环境变量: " + name);
+        }
+        return value;
     }
 
     private static String value(Map<String, String> environment, String name, String fallback) {
@@ -89,8 +96,7 @@ public record DevOnlyChainSettings(
         return value;
     }
 
-    private static List<DorisBeEndpoint> beTargets(Map<String, String> environment) {
-        String raw = value(environment, "MTX_RDP_DEV_DORIS_BE", DEFAULT_DORIS_BE);
+    private static List<DorisBeEndpoint> beTargets(String raw) {
         List<DorisBeEndpoint> targets = new ArrayList<>();
         for (String item : raw.split(",")) {
             String token = item.trim();
@@ -109,12 +115,13 @@ public record DevOnlyChainSettings(
         return targets;
     }
 
-    private static int integer(Map<String, String> environment, String name, int fallback) {
-        String value = environment.get(name);
-        if (value == null || value.isBlank()) {
-            return fallback;
+    private static int integer(Map<String, String> environment, String name) {
+        String value = required(environment, name);
+        try {
+            return Integer.parseInt(value);
+        } catch (NumberFormatException exception) {
+            throw new IllegalArgumentException("环境变量不是整数: " + name);
         }
-        return Integer.parseInt(value);
     }
 
     private static void rejectRoot(String username, String product) {

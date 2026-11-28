@@ -23,7 +23,7 @@ public final class DevOnlyDorisQuery implements AutoCloseable {
 
     public void open() {
         String url = "jdbc:mysql://" + settings.dorisHost() + ":" + settings.dorisQueryPort()
-                + "/?useSSL=false&allowPublicKeyRetrieval=true&characterEncoding=utf8&connectionTimeZone=UTC";
+            + "/?useSSL=false&allowPublicKeyRetrieval=true&characterEncoding=utf8&connectionTimeZone=UTC";
         try {
             Class.forName("com.mysql.cj.jdbc.Driver");
             Properties properties = new Properties();
@@ -53,10 +53,10 @@ public final class DevOnlyDorisQuery implements AutoCloseable {
     public ResultRow find(String devRunId) {
         String database = DevOnlyDatabaseName.require(settings.dorisDatabase());
         String sql = """
-                SELECT dev_run_id, dev_only, test_task_id, raw_message_ref, contract_version_id, result_payload
-                FROM %s.dev_only_result
-                WHERE dev_run_id = ?
-                """.formatted(database);
+            SELECT dev_run_id, dev_only, test_task_id, raw_message_ref, contract_version_id, result_payload
+            FROM %s.dev_only_result
+            WHERE dev_run_id = ?
+            """.formatted(database);
         try (var statement = connection.prepareStatement(sql)) {
             statement.setString(1, devRunId);
             try (ResultSet rows = statement.executeQuery()) {
@@ -64,7 +64,7 @@ public final class DevOnlyDorisQuery implements AutoCloseable {
                     return null;
                 }
                 return new ResultRow(rows.getString(1), rows.getString(2), rows.getString(3),
-                        rows.getString(4), rows.getString(5), rows.getString(6));
+                    rows.getString(4), rows.getString(5), rows.getString(6));
             }
         } catch (SQLException exception) {
             throw new IllegalStateException("查询 DEV_ONLY Doris 结果失败", exception);
@@ -94,11 +94,11 @@ public final class DevOnlyDorisQuery implements AutoCloseable {
     }
 
     public record ResultRow(
-            String devRunId,
-            String devOnly,
-            String taskId,
-            String rawRef,
-            String contractVersionId,
-            String resultPayload) {
+        String devRunId,
+        String devOnly,
+        String taskId,
+        String rawRef,
+        String contractVersionId,
+        String resultPayload) {
     }
 }

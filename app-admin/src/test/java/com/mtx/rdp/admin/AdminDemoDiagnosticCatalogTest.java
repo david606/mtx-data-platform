@@ -10,8 +10,11 @@ import java.util.List;
 import org.junit.jupiter.api.Test;
 
 /**
- * A11-1：直接检查静态演示清单的文本。不启动应用，也不证明运行时已经输出。
- * A11-2 和 A13 不在本测试范围内。
+ * 静态演示清单文本
+ * <pre>
+ * 1. A11-1：直接检查静态演示清单的文本。不启动应用，也不证明运行时已经输出。
+ * 2. A11-2 和 A13 不在本测试范围内。
+ * </pre>
  */
 class AdminDemoDiagnosticCatalogTest {
 

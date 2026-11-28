@@ -4,8 +4,11 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * 在已经固定的 snapshot 内定位唯一 contractVersionId。
- * 不选择快照，不访问存储，也不做家族身份、contractId、外部版本号后置一致性或正文哈希校验。
+ * 固定快照内的契约版本唯一性
+ * <pre>
+ * 1. 在已经固定的 snapshot 内定位唯一 contractVersionId。
+ * 2. 不选择快照，不访问存储，也不做家族身份、contractId、外部版本号后置一致性或正文哈希校验。
+ * </pre>
  */
 public final class ContractVersionUniqueness {
 

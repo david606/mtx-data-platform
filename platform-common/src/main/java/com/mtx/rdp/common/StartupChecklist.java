@@ -3,11 +3,9 @@ package com.mtx.rdp.common;
 import java.util.List;
 
 /**
- * 核对进程名和职责是否与当前应用一致。没有激活 profile 时只报告未命名，不默认成某个环境。
+ * 核对进程名、职责和开发环境。必须明确选择 company 或 local，不默认成公司环境。
  */
 public final class StartupChecklist {
-
-    public static final String UNNAMED_ENVIRONMENT = "未激活配置环境";
 
     private StartupChecklist() {
     }
@@ -37,10 +35,8 @@ public final class StartupChecklist {
                     "mtx.rdp.role 与进程职责不一致: " + actualRole.configValue());
         }
         List<String> profiles = copyProfiles(activeProfiles);
-        String environmentLabel = profiles.isEmpty()
-                ? UNNAMED_ENVIRONMENT
-                : String.join(",", profiles);
-        return new StartupReport(applicationName, actualRole, profiles, environmentLabel);
+        DevelopmentPlacement placement = DevelopmentProfile.requireSingle(profiles);
+        return new StartupReport(applicationName, actualRole, profiles, placement.label());
     }
 
     private static List<String> copyProfiles(List<String> activeProfiles) {

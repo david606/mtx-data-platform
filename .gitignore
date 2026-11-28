@@ -12,7 +12,7 @@ out/
 .DS_Store
 
 # Secrets and local environment
-.env
+.env.company
 .env.*
 !.env.example
 *.pem
@@ -22,6 +22,3 @@ out/
 credentials.json
 credentials*.json
 secrets/
-**/application-local.yml
-**/application-local.yaml
-**/application-local.properties

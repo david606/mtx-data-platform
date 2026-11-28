@@ -26,9 +26,12 @@ import java.util.Set;
 import java.util.UUID;
 
 /**
- * 一条 DEV_ONLY 测试链路。夹具标识不是正式来源事件身份，领取也不是正式执行权。
- * MySQL 插入成功后才提交 Kafka offset。Doris 或核对失败时任务保持未完成，并记为 FAILED。
- * 显式重新执行只接受 FAILED 的 DEV_ONLY 测试任务，不重新消费 Kafka，也不是正式恢复。
+ * DEV_ONLY 测试链路
+ * <pre>
+ * 1. 一条 DEV_ONLY 测试链路。夹具标识不是正式来源事件身份，领取也不是正式执行权。
+ * 2. MySQL 插入成功后才提交 Kafka offset。Doris 或核对失败时任务保持未完成，并记为 FAILED。
+ * 3. 显式重新执行只接受 FAILED 的 DEV_ONLY 测试任务，不重新消费 Kafka，也不是正式恢复。
+ * </pre>
  */
 public final class DevOnlyChainRunner {
 

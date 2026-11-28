@@ -6,10 +6,13 @@ import java.util.Objects;
 import java.util.Optional;
 
 /**
- * 解析两个显式确认键的原始文本。只表达确认是否完整，不识别生产环境，也不许可创建 DEV_ONLY 对象。
- * ACKNOWLEDGED 只表示操作者显式确认完整，不是可信非生产证明。
- * PRODUCTION_SELF_DECLARED 只是自我声明，不是可信生产识别。
- * 结果不得用来创建模拟存储或演示清单，也不得作为 C1-02、C1-08 运行时对象的创建条件。
+ * 显式确认键解析
+ * <pre>
+ * 1. 解析两个显式确认键的原始文本。只表达确认是否完整，不识别生产环境，也不许可创建 DEV_ONLY 对象。
+ * 2. ACKNOWLEDGED 只表示操作者显式确认完整，不是可信非生产证明。
+ * 3. PRODUCTION_SELF_DECLARED 只是自我声明，不是可信生产识别。
+ * 4. 结果不得用来创建模拟存储或演示清单，也不得作为 C1-02、C1-08 运行时对象的创建条件。
+ * </pre>
  */
 public final class RuntimeModeConfirmationParser {
 
@@ -22,8 +25,11 @@ public final class RuntimeModeConfirmationParser {
     }
 
     /**
-     * 按键是否存在和未经转换的原始文本解析。空 Optional 表示键不存在，{@code Optional.of("")} 表示键存在且原文为空。
-     * 比较前不 trim、不忽略大小写、不做布尔转换。
+     * 原始文本解析
+     * <pre>
+     * 1. 按键是否存在和未经转换的原始文本解析。空 Optional 表示键不存在，{@code Optional.of("")} 表示键存在且原文为空。
+     * 2. 比较前不 trim、不忽略大小写、不做布尔转换。
+     * </pre>
      */
     public static Result parse(Optional<String> runtimeMode, Optional<String> devOnlyAcknowledged) {
         Objects.requireNonNull(runtimeMode, "runtimeMode");

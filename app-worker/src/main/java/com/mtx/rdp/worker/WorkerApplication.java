@@ -5,7 +5,10 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 
 @SpringBootApplication
-@EnableConfigurationProperties(WorkerRuntimeProperties.class)
+@EnableConfigurationProperties({
+        WorkerRuntimeProperties.class,
+        WorkerDevInfrastructureProperties.class
+})
 public class WorkerApplication {
 
     public static final String APPLICATION_NAME = "mtx-rdp-worker";

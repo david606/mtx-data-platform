@@ -4,10 +4,13 @@ import java.util.List;
 import java.util.Objects;
 
 /**
- * Admin 自己的 DEV_ONLY 静态演示清单。
- * 内容不是 Worker 的实际执行结果，也不是正式业务结果或正式审计。
- * 本类不提供运行时输出入口，不表示已经获得 DEV_ONLY 运行许可。
- * A11-2 的启动输出和 A13 的生产隔离都不在这里实现。
+ * DEV_ONLY 静态演示清单
+ * <pre>
+ * 1. Admin 自己的 DEV_ONLY 静态演示清单。
+ * 2. 内容不是 Worker 的实际执行结果，也不是正式业务结果或正式审计。
+ * 3. 本类不提供运行时输出入口，不表示已经获得 DEV_ONLY 运行许可。
+ * 4. A11-2 的启动输出和 A13 的生产隔离都不在这里实现。
+ * </pre>
  */
 public final class AdminDemoDiagnosticCatalog {
 

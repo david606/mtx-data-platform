@@ -3,8 +3,11 @@ package com.mtx.rdp.core.contract;
 import java.util.Objects;
 
 /**
- * 报文或版本行上的外部版本号。
- * 「未提供」是单独的领域值，不是 Java null、空白，也不是某个实际版本号字符串。
+ * 外部契约版本号
+ * <pre>
+ * 1. 报文或版本行上的外部版本号。
+ * 2. 「未提供」是单独的领域值，不是 Java null、空白，也不是某个实际版本号字符串。
+ * </pre>
  */
 public final class ExternalContractVersion {
 

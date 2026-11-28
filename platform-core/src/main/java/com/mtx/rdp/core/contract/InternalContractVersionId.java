@@ -3,8 +3,11 @@ package com.mtx.rdp.core.contract;
 import java.util.Objects;
 
 /**
- * 可选的内部契约版本标识。
- * 未提供该标识，与外部版本号为「未提供」，是两件不同的事。
+ * 内部契约版本标识
+ * <pre>
+ * 1. 可选的内部契约版本标识。
+ * 2. 未提供该标识，与外部版本号为「未提供」，是两件不同的事。
+ * </pre>
  */
 public final class InternalContractVersionId {
 

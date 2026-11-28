@@ -1,6 +1,8 @@
 package com.mtx.rdp.worker;
 
 import com.mtx.rdp.common.ApplicationRole;
+import com.mtx.rdp.common.DevelopmentPlacement;
+import com.mtx.rdp.common.DevelopmentProfile;
 import com.mtx.rdp.common.PlatformConfigurationException;
 import com.mtx.rdp.common.StartupChecklist;
 import com.mtx.rdp.common.StartupReport;
@@ -21,14 +23,17 @@ public class WorkerProcessStartup implements ApplicationRunner {
 
     private final Environment environment;
     private final WorkerRuntimeProperties properties;
+    private final WorkerDevInfrastructureProperties devInfrastructure;
     private final HealthEndpoint healthEndpoint;
 
     public WorkerProcessStartup(
             Environment environment,
             WorkerRuntimeProperties properties,
+            WorkerDevInfrastructureProperties devInfrastructure,
             HealthEndpoint healthEndpoint) {
         this.environment = environment;
         this.properties = properties;
+        this.devInfrastructure = devInfrastructure;
         this.healthEndpoint = healthEndpoint;
     }
 
@@ -40,15 +45,18 @@ public class WorkerProcessStartup implements ApplicationRunner {
                 properties.getRole(),
                 ApplicationRole.WORKER,
                 List.of(environment.getActiveProfiles()));
+        DevelopmentPlacement placement = DevelopmentProfile.requireSingle(List.of(environment.getActiveProfiles()));
+        devInfrastructure.requireFor(placement);
         Status status = healthEndpoint.health().getStatus();
         if (!Status.UP.equals(status)) {
             throw new PlatformConfigurationException("进程健康状态不是 UP: " + status.getCode());
         }
         log.info(
-                "进程启动完成 applicationName={} role={} environment={} health={}",
+                "进程启动完成 applicationName={} role={} environment={} health={} {}",
                 report.applicationName(),
                 report.role().configValue(),
                 report.environmentLabel(),
-                status.getCode());
+                status.getCode(),
+                devInfrastructure.publicDescription());
     }
 }

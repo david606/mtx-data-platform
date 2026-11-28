@@ -5,7 +5,10 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 
 @SpringBootApplication
-@EnableConfigurationProperties(AdminRuntimeProperties.class)
+@EnableConfigurationProperties({
+        AdminRuntimeProperties.class,
+        AdminDevInfrastructureProperties.class
+})
 public class AdminApplication {
 
     public static final String APPLICATION_NAME = "mtx-rdp-admin";
